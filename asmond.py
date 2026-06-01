@@ -32,7 +32,7 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Asmond"
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 POWER_SAMPLERS = "cpu_power,gpu_power,ane_power,thermal,battery"
 ANE_MAX_POWER_MW = 8000.0
 IOHID_TEMP_TYPE = 15
@@ -42,6 +42,7 @@ LAYOUTS = ("full", "compact", "power-only", "thermals-only")
 LOAD_VIEWS = ("rows", "graph")
 PROCESS_PANEL_MODES = ("hidden", "left", "right")
 PROCESS_SORTS = ("cpu", "ram", "pid", "name")
+CHARGE_PANEL_MODES = ("battery", "usb")
 IO_MODES = ("disk_read", "disk_write", "net_in", "net_out")
 IO_MODE_LABELS = {
     "disk_read": "disk read",
@@ -61,6 +62,7 @@ MENU_ITEMS = (
     ("load_view", "Load view", "CPU/GPU avg rows or graph"),
     ("process_panel", "Processes", "Full layout process panel"),
     ("process_sort", "Proc sort", "Process sort key"),
+    ("charge_panel", "Charge panel", "Full layout battery or USB-C panel"),
     ("allow_root_kill", "Root kill", "Allow process kill when running as root"),
     ("alert_temp", "Temp alert", "High temperature threshold"),
     ("alert_swap", "Swap alert", "Swap-used threshold"),
@@ -93,6 +95,7 @@ MAX_INTERVAL = 10.0
 MEMORY_BATTERY_INTERVAL = 2.0
 IO_POLL_INTERVAL = 1.0
 PROCESS_POLL_INTERVAL = 2.0
+SUDO_REFRESH_INTERVAL = 60.0
 
 
 THEMES = {
@@ -262,6 +265,9 @@ def load_settings() -> dict[str, Any]:
     process_sort = data.get("process_sort")
     if isinstance(process_sort, str) and process_sort in PROCESS_SORTS:
         settings["process_sort"] = process_sort
+    charge_panel = data.get("charge_panel")
+    if isinstance(charge_panel, str) and charge_panel in CHARGE_PANEL_MODES:
+        settings["charge_panel"] = charge_panel
     allow_root_kill = data.get("allow_root_kill")
     if isinstance(allow_root_kill, bool):
         settings["allow_root_kill"] = allow_root_kill
@@ -295,6 +301,7 @@ def save_settings(args: argparse.Namespace) -> str | None:
         "load_view": setting_choice(args, "load_view", "rows", LOAD_VIEWS),
         "process_panel": setting_choice(args, "process_panel", "hidden", PROCESS_PANEL_MODES),
         "process_sort": setting_choice(args, "process_sort", "cpu", PROCESS_SORTS),
+        "charge_panel": setting_choice(args, "charge_panel", "battery", CHARGE_PANEL_MODES),
         "allow_root_kill": bool(getattr(args, "allow_root_kill", False)),
         "alert_temp_c": round(float(getattr(args, "alert_temp_c", HIGH_TEMP_C)), 1),
         "alert_swap_gib": round(float(getattr(args, "alert_swap_gib", DEFAULT_ALERT_SWAP_GIB)), 2),
@@ -408,6 +415,40 @@ class BatteryStats:
 
 
 @dataclass
+class UsbCPortStats:
+    label: str
+    connected: bool = False
+    role: str = "unknown"
+    voltage_v: float | None = None
+    current_a: float | None = None
+    power_w: float | None = None
+    max_power_w: float | None = None
+    pdo_labels: list[str] = field(default_factory=list)
+    cable: str = "unknown"
+
+
+@dataclass
+class UsbCStats:
+    ports: list[UsbCPortStats] = field(default_factory=list)
+    active_index: int | None = None
+    external_connected: bool | None = None
+    charging: bool | None = None
+    system_voltage_v: float | None = None
+    system_current_a: float | None = None
+    system_power_w: float | None = None
+    adapter_power_w: float | None = None
+    adapter_name: str = ""
+
+    @property
+    def active_port(self) -> UsbCPortStats | None:
+        if self.active_index is None:
+            return None
+        if 0 <= self.active_index < len(self.ports):
+            return self.ports[self.active_index]
+        return None
+
+
+@dataclass
 class IoSnapshot:
     timestamp: float = field(default_factory=time.monotonic)
     disk_read_bytes: int = 0
@@ -447,8 +488,25 @@ class ProcessInfo:
 class SideMetricsUpdate:
     memory: MemoryStats | None = None
     battery: BatteryStats | None = None
+    usb_c: UsbCStats | None = None
     io_stats: IoStats | None = None
     processes: list[ProcessInfo] | None = None
+
+
+@dataclass
+class SideMetricsPollState:
+    poll_io: bool = False
+    poll_processes: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def update(self, poll_io: bool, poll_processes: bool) -> None:
+        with self.lock:
+            self.poll_io = poll_io
+            self.poll_processes = poll_processes
+
+    def snapshot(self) -> tuple[bool, bool]:
+        with self.lock:
+            return self.poll_io, self.poll_processes
 
 
 @dataclass
@@ -501,6 +559,7 @@ class MetricSample:
     thermal_pressure: str | None = None
     throttled: bool | None = None
     throttle_reasons: list[str] = field(default_factory=list)
+    memory_bandwidth_gbps: dict[str, float] = field(default_factory=dict)
     raw_keys: int = 0
     warning: str | None = None
 
@@ -692,6 +751,51 @@ def max_present(values: Iterable[float | None]) -> float | None:
     return max(present)
 
 
+def bandwidth_label(name: str) -> str:
+    key = normalize_key(name)
+    if "cpu" in key:
+        return "CPU"
+    if "gpu" in key:
+        return "GPU"
+    if "ane" in key or "neural" in key:
+        return "ANE"
+    if any(word in key for word in ("media", "video", "decoder", "encoder")):
+        return "Media"
+    if "dram" in key:
+        return "DRAM"
+    if "dcs" in key:
+        return "DCS"
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", name).strip()
+    return (cleaned or "BW")[:10]
+
+
+def bytes_per_s_to_gb_s(value: float | None) -> float | None:
+    if value is None or value < 0:
+        return None
+    return value / 1_000_000_000.0
+
+
+def bandwidth_counters_from_plist(obj: dict[str, Any]) -> dict[str, float]:
+    counters = obj.get("bandwidth_counters")
+    if not isinstance(counters, list):
+        return {}
+    values: dict[str, float] = {}
+    for item in counters:
+        if not isinstance(item, dict):
+            continue
+        raw_name = item.get("name")
+        raw_value = item.get("value")
+        if not isinstance(raw_name, str):
+            continue
+        value = dict_number(item, "value") if raw_value is not None else None
+        gb_s = bytes_per_s_to_gb_s(value)
+        if gb_s is None:
+            continue
+        label = bandwidth_label(raw_name)
+        values[label] = values.get(label, 0.0) + gb_s
+    return values
+
+
 def temp_stats_from_flat(flat: list[tuple[str, Any]]) -> tuple[float | None, float | None]:
     temps: list[float] = []
     include_words = ("temp", "temperature", "tdie")
@@ -871,6 +975,7 @@ def sample_from_plist(obj: dict[str, Any], interval_s: float = 1.0) -> MetricSam
     flat = list(flatten(obj))
     sample = MetricSample(raw_keys=len(flat))
     apply_structured_powermetrics(sample, obj, interval_s)
+    sample.memory_bandwidth_gbps = bandwidth_counters_from_plist(obj)
 
     sample.cpu_power_mw = first_non_none(sample.cpu_power_mw, find_best(
         flat, ("cpu", "power"), exclude=("limit", "cap", "battery"), converter=as_mw
@@ -1007,7 +1112,7 @@ def sample_from_plist(obj: dict[str, Any], interval_s: float = 1.0) -> MetricSam
 def read_battery_items() -> dict[str, Any] | None:
     try:
         proc = subprocess.run(
-            ["ioreg", "-rn", "AppleSmartBattery", "-a"],
+            ["ioreg", "-a", "-r", "-c", "AppleSmartBattery"],
             check=False,
             capture_output=True,
             timeout=1.0,
@@ -1070,6 +1175,20 @@ def nested_dict_number(mapping: dict[str, Any], *path: str) -> float | None:
     return None
 
 
+def signed_u64_number(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if value >= 2**63:
+        return value - 2**64
+    return value
+
+
+def unsigned32(value: float | None) -> int | None:
+    if value is None:
+        return None
+    return int(value) & 0xFFFFFFFF
+
+
 def battery_temperature_from_item(battery: dict[str, Any]) -> float | None:
     for value in (
         dict_number(battery, "Temperature"),
@@ -1084,17 +1203,141 @@ def battery_temperature_from_item(battery: dict[str, Any]) -> float | None:
     return None
 
 
-def read_battery_power_mw() -> float | None:
-    battery = read_battery_items()
-    if battery is None:
-        return None
-    return battery_power_from_item(battery)
+def format_pd_value(value: float, unit: str) -> str:
+    if abs(value - round(value)) < 0.01:
+        return f"{value:.0f}{unit}"
+    return f"{value:.1f}{unit}"
 
 
-def read_battery_stats() -> BatteryStats:
-    battery = read_battery_items()
-    if battery is None:
-        return BatteryStats()
+def decode_fixed_pdo(raw_value: Any) -> tuple[str, float | None, float | None, float | None]:
+    raw = unsigned32(raw_value if isinstance(raw_value, int | float) else None)
+    if raw is None or raw == 0:
+        return "", None, None, None
+    pdo_type = (raw >> 30) & 0x3
+    if pdo_type == 0:
+        voltage_v = ((raw >> 10) & 0x3FF) * 0.05
+        current_a = (raw & 0x3FF) * 0.01
+        power_w = voltage_v * current_a
+        return f"{format_pd_value(voltage_v, 'V')} {format_pd_value(current_a, 'A')}", voltage_v, current_a, power_w
+    if pdo_type == 1:
+        min_v = ((raw >> 10) & 0x3FF) * 0.05
+        max_v = ((raw >> 20) & 0x3FF) * 0.05
+        power_w = (raw & 0x3FF) * 0.25
+        return f"{format_pd_value(min_v, 'V')}-{format_pd_value(max_v, 'V')} {format_pd_value(power_w, 'W')}", None, None, power_w
+    if pdo_type == 2:
+        min_v = ((raw >> 10) & 0x3FF) * 0.05
+        max_v = ((raw >> 20) & 0x3FF) * 0.05
+        current_a = (raw & 0x3FF) * 0.01
+        return f"{format_pd_value(min_v, 'V')}-{format_pd_value(max_v, 'V')} {format_pd_value(current_a, 'A')}", None, current_a, max_v * current_a
+    subtype = (raw >> 28) & 0x3
+    if subtype == 0:
+        max_v = ((raw >> 17) & 0xFF) * 0.1
+        min_v = ((raw >> 8) & 0xFF) * 0.1
+        current_a = (raw & 0x7F) * 0.05
+        power_w = max_v * current_a if max_v and current_a else None
+        return f"PPS {format_pd_value(min_v, 'V')}-{format_pd_value(max_v, 'V')} {format_pd_value(current_a, 'A')}", None, current_a, power_w
+    return "APDO", None, None, None
+
+
+def pdo_list_from_port(port: dict[str, Any]) -> list[int]:
+    values = port.get("PortControllerPortPDO")
+    if not isinstance(values, list):
+        return []
+    count = int(dict_number(port, "PortControllerNPDOs") or len(values))
+    pdos: list[int] = []
+    for value in values[: max(0, count)]:
+        raw = unsigned32(value if isinstance(value, int | float) else None)
+        if raw:
+            pdos.append(raw)
+    return pdos
+
+
+def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
+    telemetry = battery.get("PowerTelemetryData")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    adapter = battery.get("AdapterDetails")
+    adapter = adapter if isinstance(adapter, dict) else {}
+    port_infos = battery.get("PortControllerInfo")
+    port_infos = port_infos if isinstance(port_infos, list) else []
+    fed_details = battery.get("FedDetails")
+    fed_details = fed_details if isinstance(fed_details, list) else []
+
+    system_voltage_mv = signed_u64_number(dict_number(telemetry, "SystemVoltageIn"))
+    system_current_ma = signed_u64_number(dict_number(telemetry, "SystemCurrentIn"))
+    system_power_mw = signed_u64_number(dict_number(telemetry, "SystemPowerIn"))
+    adapter_power_w = first_non_none(
+        dict_number(adapter, "Watts"),
+        dict_number(adapter, "AdapterPower"),
+        dict_number(adapter, "Power"),
+    )
+    if adapter_power_w is not None and adapter_power_w > 1000:
+        adapter_power_w /= 1000.0
+    adapter_name = ""
+    for key in ("Description", "Name", "Manufacturer", "SerialString"):
+        value = adapter.get(key)
+        if isinstance(value, str) and value.strip():
+            adapter_name = value.strip()
+            break
+
+    best_index = int(dict_number(battery, "BestAdapterIndex") or 0)
+    external_connected = bool(battery.get("ExternalConnected")) if "ExternalConnected" in battery else None
+    charging = bool(battery.get("IsCharging")) if "IsCharging" in battery else None
+    active_index: int | None = None
+    ports: list[UsbCPortStats] = []
+    for index, raw_port in enumerate(port_infos):
+        if not isinstance(raw_port, dict):
+            continue
+        pdos = pdo_list_from_port(raw_port)
+        decoded = [decode_fixed_pdo(value) for value in pdos]
+        pdo_labels = [label for label, _, _, _ in decoded if label]
+        max_power_w = max_present(power for _, _, _, power in decoded)
+        rdo = unsigned32(dict_number(raw_port, "PortControllerActiveContractRdo")) or 0
+        object_position = (rdo >> 28) & 0x7 if rdo else 0
+        selected = pdos[object_position - 1] if 1 <= object_position <= len(pdos) else None
+        _, voltage_v, _, _ = decode_fixed_pdo(selected) if selected is not None else ("", None, None, None)
+        current_a = ((rdo >> 10) & 0x3FF) * 0.01 if rdo else None
+        power_w = voltage_v * current_a if voltage_v is not None and current_a is not None else None
+        fed = fed_details[index] if index < len(fed_details) and isinstance(fed_details[index], dict) else {}
+        fed_connected = bool(fed.get("FedExternalConnected")) if isinstance(fed, dict) and "FedExternalConnected" in fed else False
+        connected = bool(rdo or fed_connected)
+        role = "sink" if external_connected and index == best_index else "source/data" if connected else "idle"
+        cable = "unknown"
+        if current_a is not None:
+            if current_a > 3.05:
+                cable = "5A/e-mark likely"
+            elif connected:
+                cable = "3A or unknown"
+        elif connected:
+            cable = "unknown active"
+        port = UsbCPortStats(
+            label=f"USB-C {index + 1}",
+            connected=connected,
+            role=role,
+            voltage_v=voltage_v,
+            current_a=current_a,
+            power_w=power_w,
+            max_power_w=max_power_w,
+            pdo_labels=pdo_labels,
+            cable=cable,
+        )
+        if active_index is None and (external_connected and index == best_index or rdo):
+            active_index = len(ports)
+        ports.append(port)
+
+    return UsbCStats(
+        ports=ports,
+        active_index=active_index,
+        external_connected=external_connected,
+        charging=charging,
+        system_voltage_v=system_voltage_mv / 1000.0 if system_voltage_mv and system_voltage_mv > 0 else None,
+        system_current_a=system_current_ma / 1000.0 if system_current_ma and system_current_ma > 0 else None,
+        system_power_w=system_power_mw / 1000.0 if system_power_mw and system_power_mw > 0 else None,
+        adapter_power_w=adapter_power_w,
+        adapter_name=adapter_name,
+    )
+
+
+def battery_stats_from_item(battery: dict[str, Any]) -> BatteryStats:
     raw_max_capacity = dict_number(battery, "AppleRawMaxCapacity")
     raw_design = dict_number(battery, "DesignCapacity")
     max_capacity = raw_max_capacity or dict_number(battery, "MaxCapacity")
@@ -1121,6 +1364,27 @@ def read_battery_stats() -> BatteryStats:
         max_capacity=int(max_capacity) if max_capacity is not None else None,
         raw_max_capacity=int(raw_max_capacity) if raw_max_capacity is not None else None,
     )
+
+
+def read_charge_stats() -> tuple[BatteryStats, UsbCStats]:
+    battery = read_battery_items()
+    if battery is None:
+        return BatteryStats(), UsbCStats()
+    return battery_stats_from_item(battery), usb_c_stats_from_item(battery)
+
+
+def read_battery_power_mw() -> float | None:
+    battery = read_battery_items()
+    if battery is None:
+        return None
+    return battery_power_from_item(battery)
+
+
+def read_battery_stats() -> BatteryStats:
+    battery = read_battery_items()
+    if battery is None:
+        return BatteryStats()
+    return battery_stats_from_item(battery)
 
 
 def refresh_battery_power(sample: MetricSample) -> None:
@@ -1404,22 +1668,28 @@ def read_processes() -> list[ProcessInfo]:
     return processes
 
 
-def side_metrics_worker(updates: queue.Queue[SideMetricsUpdate], stop_event: threading.Event) -> None:
+def side_metrics_worker(
+    updates: queue.Queue[SideMetricsUpdate],
+    stop_event: threading.Event,
+    poll_state: SideMetricsPollState,
+) -> None:
     previous_io: IoSnapshot | None = None
     next_memory = 0.0
     next_io = 0.0
     next_process = 0.0
     while not stop_event.is_set():
         now = time.monotonic()
-        slept = False
         if now >= next_memory:
             try:
-                updates.put(SideMetricsUpdate(memory=read_memory_stats(), battery=read_battery_stats()))
+                battery, usb_c = read_charge_stats()
+                updates.put(SideMetricsUpdate(memory=read_memory_stats(), battery=battery, usb_c=usb_c))
             except Exception:
                 pass
             next_memory = time.monotonic() + MEMORY_BATTERY_INTERVAL
+
+        poll_io, poll_processes = poll_state.snapshot()
         now = time.monotonic()
-        if now >= next_io:
+        if poll_io and now >= next_io:
             try:
                 current_io = read_io_snapshot()
                 updates.put(SideMetricsUpdate(io_stats=io_stats_from_snapshots(previous_io, current_io)))
@@ -1427,17 +1697,28 @@ def side_metrics_worker(updates: queue.Queue[SideMetricsUpdate], stop_event: thr
             except Exception:
                 pass
             next_io = time.monotonic() + IO_POLL_INTERVAL
+        elif not poll_io:
+            previous_io = None
+            next_io = now + IO_POLL_INTERVAL
+
         now = time.monotonic()
-        if now >= next_process:
+        if poll_processes and now >= next_process:
             try:
                 updates.put(SideMetricsUpdate(processes=read_processes()))
             except Exception:
                 pass
             next_process = time.monotonic() + PROCESS_POLL_INTERVAL
-        next_due = min(next_memory, next_io, next_process)
+        elif not poll_processes:
+            next_process = now + PROCESS_POLL_INTERVAL
+
+        due_times = [next_memory]
+        if poll_io:
+            due_times.append(next_io)
+        if poll_processes:
+            due_times.append(next_process)
+        next_due = min(due_times)
         timeout = max(0.05, min(0.5, next_due - time.monotonic()))
-        slept = stop_event.wait(timeout)
-        if slept:
+        if stop_event.wait(timeout):
             break
 
 
@@ -1608,6 +1889,35 @@ def is_root_process() -> bool:
     return os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0
 
 
+def powermetrics_needs_sudo() -> bool:
+    return os.name == "posix" and not is_root_process()
+
+
+def refresh_sudo_credentials(prompt: bool) -> tuple[bool, str]:
+    if not powermetrics_needs_sudo():
+        return True, ""
+    if shutil.which("sudo") is None:
+        return False, "sudo was not found"
+    command = ["sudo", "-v"] if prompt else ["sudo", "-n", "-v"]
+    try:
+        proc = subprocess.run(
+            command,
+            check=False,
+            capture_output=not prompt,
+            timeout=None if prompt else 8.0,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "sudo credential refresh timed out"
+    except Exception as exc:
+        return False, str(exc)
+    if proc.returncode == 0:
+        return True, ""
+    if prompt:
+        return False, f"sudo exited with {proc.returncode}"
+    stderr = proc.stderr.decode("utf-8", "ignore").strip() if proc.stderr else ""
+    return False, stderr or f"sudo exited with {proc.returncode}"
+
+
 def powermetrics_command(interval_ms: int, sample_count: int | str) -> list[str]:
     command = [
         "powermetrics",
@@ -1627,7 +1937,7 @@ def powermetrics_command(interval_ms: int, sample_count: int | str) -> list[str]
         "--show-extra-power-info",
         "--handle-invalid-values",
     ]
-    if os.name == "posix" and not is_root_process():
+    if powermetrics_needs_sudo():
         return ["sudo", "-n", *command]
     return command
 
@@ -1635,13 +1945,48 @@ def powermetrics_command(interval_ms: int, sample_count: int | str) -> list[str]
 def ensure_powermetrics_access(args: argparse.Namespace) -> None:
     if args.mock or os.name != "posix" or is_root_process():
         return
-    if shutil.which("sudo") is None:
-        print(f"{APP_NAME} needs sudo for powermetrics, but sudo was not found.", file=sys.stderr)
-        sys.exit(1)
     print(f"{APP_NAME} keeps the UI unprivileged and asks sudo only for powermetrics.")
-    proc = subprocess.run(["sudo", "-v"], check=False)
-    if proc.returncode != 0:
-        sys.exit(proc.returncode)
+    ok, error = refresh_sudo_credentials(prompt=True)
+    if not ok:
+        print(f"{APP_NAME} could not get sudo access for powermetrics: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def ensure_ui_not_root(args: argparse.Namespace) -> None:
+    if args.mock or args.command == "probe" or not is_root_process() or getattr(args, "allow_root_ui", False):
+        return
+    print(
+        f"{APP_NAME} refuses to run the full terminal UI as root.\n"
+        "Run `asmond` normally; only powermetrics will be started with sudo.\n"
+        f"If you really want the whole UI as root, pass --allow-root-ui.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+class SudoKeeper:
+    def __init__(self) -> None:
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.last_error = ""
+
+    def start(self) -> None:
+        if not powermetrics_needs_sudo():
+            return
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            ok, error = refresh_sudo_credentials(prompt=False)
+            self.last_error = "" if ok else error
+            if self.stop_event.wait(SUDO_REFRESH_INTERVAL):
+                break
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=0.2)
 
 
 def apply_hid_temperatures(sample: MetricSample) -> None:
@@ -1675,6 +2020,10 @@ class PowerMetricsStream:
             return
 
     def samples(self) -> Iterable[MetricSample]:
+        ok, error = refresh_sudo_credentials(prompt=False)
+        if not ok:
+            yield MetricSample(warning=f"sudo credential unavailable for powermetrics: {error}")
+            return
         self.proc = subprocess.Popen(
             self.command(),
             stdout=subprocess.PIPE,
@@ -1762,6 +2111,12 @@ class MockStream:
                 cores=cores,
                 thermal_pressure="Nominal",
                 throttled=False,
+                memory_bandwidth_gbps={
+                    "CPU": 18.0 + 10.0 * max(0, math.sin(self.t / 2)),
+                    "GPU": 9.0 + 18.0 * max(0, math.sin(self.t / 4)),
+                    "ANE": 0.4 if int(self.t) % 9 else 4.8,
+                    "DRAM": 30.0 + 20.0 * max(0, math.sin(self.t / 3)),
+                },
                 raw_keys=42,
             )
             time.sleep(self.interval_ms / 1000.0)
@@ -1910,6 +2265,26 @@ def fmt_power(value: float | None) -> str:
     return f"{value:.0f} mW"
 
 
+def fmt_watts(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if abs(value) >= 10:
+        return f"{value:.1f} W"
+    return f"{value:.2f} W"
+
+
+def fmt_voltage(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f} V" if abs(value) < 10 else f"{value:.1f} V"
+
+
+def fmt_current(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f} A"
+
+
 def fmt_bytes(value: int | None) -> str:
     if value is None or value <= 0:
         return "n/a"
@@ -1939,6 +2314,14 @@ def fmt_rate(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{fmt_bytes_zero(int(value))}/s"
+
+
+def fmt_gb_s(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if abs(value) >= 10:
+        return f"{value:.1f} GB/s"
+    return f"{value:.2f} GB/s"
 
 
 def fmt_pct(value: float | None) -> str:
@@ -2028,6 +2411,36 @@ def draw_logo(win: curses.window, y: int, x: int, w: int, colors: dict[str, int]
         safe_addstr(win, y + idx, xx, line[:LOGO_SPLIT], left_attr)
         safe_addstr(win, y + idx, xx + LOGO_SPLIT, line[LOGO_SPLIT:], right_attr)
     return len(LOGO_LINES)
+
+
+def draw_app_name(win: curses.window, y: int, x: int, colors: dict[str, int]) -> int:
+    safe_addstr(win, y, x, APP_NAME[:2], colors["accent"] | curses.A_BOLD)
+    safe_addstr(win, y, x + 2, APP_NAME[2:], colors["muted"] | curses.A_BOLD)
+    return x + len(APP_NAME)
+
+
+def draw_header(win: curses.window, args: argparse.Namespace, colors: dict[str, int]) -> None:
+    _, max_x = win.getmaxyx()
+    x = draw_app_name(win, 0, 1, colors)
+    rest = f" {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  q quit  m menu  ? help"
+    safe_addstr(win, 0, x, rest[: max(0, max_x - x - 1)], colors["bold"])
+
+
+def draw_hotkey_box(
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    title: str,
+    attr: int,
+    colors: dict[str, int],
+    hotkey: str,
+) -> None:
+    draw_box(win, y, x, h, w, title, attr)
+    idx = title.lower().find(hotkey.lower())
+    if idx >= 0:
+        safe_addstr(win, y, x + 3 + idx, title[idx], colors["warn"] | curses.A_BOLD)
 
 
 def draw_bar(win: curses.window, y: int, x: int, w: int, value: float | None, attr: int) -> None:
@@ -2463,6 +2876,62 @@ def memory_pressure_attr(value: float | None, colors: dict[str, int]) -> int:
     return colors["good"]
 
 
+def memory_bandwidth_rows(sample: MetricSample | None) -> list[tuple[str, str]]:
+    if sample is None or not sample.memory_bandwidth_gbps:
+        return []
+    priority = ("DRAM", "CPU", "GPU", "ANE", "Media", "DCS")
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label in priority:
+        if label in sample.memory_bandwidth_gbps:
+            rows.append((f"BW {label}", fmt_gb_s(sample.memory_bandwidth_gbps[label])))
+            seen.add(label)
+    for label, value in sorted(sample.memory_bandwidth_gbps.items()):
+        if label not in seen:
+            rows.append((f"BW {label}", fmt_gb_s(value)))
+    return rows
+
+
+def draw_memory_detail_rows(
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    rows: list[tuple[str, str, int, bool]],
+    colors: dict[str, int],
+) -> None:
+    for idx, (name, text, value, good_when_present) in enumerate(rows[:h]):
+        yy = y + idx
+        value_w = min(14, max(7, len(text)))
+        safe_addstr(win, yy, x, name, colors["muted"])
+        safe_addstr(
+            win,
+            yy,
+            x + max(8, w - value_w),
+            f"{text:>{value_w}}",
+            colors["good"] if value and good_when_present else colors["warn"] if value else colors["muted"],
+        )
+
+
+def draw_bandwidth_rows(
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    rows: list[tuple[str, str]],
+    colors: dict[str, int],
+) -> int:
+    drawn = 0
+    for idx, (name, text) in enumerate(rows[:h]):
+        yy = y + idx
+        safe_addstr(win, yy, x, name[: max(1, min(8, w // 2 - 1))], colors["muted"])
+        safe_addstr(win, yy, x + max(9, w - min(10, max(7, len(text)))), text[: max(1, w - 9)], colors["fg"])
+        drawn += 1
+    return drawn
+
+
 def draw_memory_pressure_meter(
     win: curses.window,
     y: int,
@@ -2500,6 +2969,7 @@ def draw_memory_section(
     h: int,
     w: int,
     memory: MemoryStats,
+    sample: MetricSample | None,
     colors: dict[str, int],
 ) -> None:
     if h < 7 or w < 30:
@@ -2556,17 +3026,18 @@ def draw_memory_section(
         ("Compr", fmt_bytes(memory.compressed_bytes), memory.compressed_bytes, True),
     ]
     row_space = max(0, h - (rows_start - y))
-    for idx, (name, text, value, good_when_present) in enumerate(rows[:row_space]):
-        yy = rows_start + idx
-        value_w = min(18, max(8, len(text)))
-        safe_addstr(win, yy, x, name, colors["muted"])
-        safe_addstr(
-            win,
-            yy,
-            x + w - value_w,
-            f"{text:>{value_w}}",
-            colors["good"] if value and good_when_present else colors["warn"] if value else colors["muted"],
-        )
+    bw_rows = memory_bandwidth_rows(sample)
+    if bw_rows and row_space > 0:
+        if w >= 58:
+            left_w = min(28, max(20, w // 2 - 2))
+            right_x = x + left_w + 2
+            draw_bandwidth_rows(win, rows_start, x, row_space, left_w, bw_rows, colors)
+            draw_memory_detail_rows(win, rows_start, right_x, row_space, max(0, x + w - right_x), rows, colors)
+            return
+        drawn = draw_bandwidth_rows(win, rows_start, x, min(row_space, len(bw_rows), 4), w, bw_rows, colors)
+        draw_memory_detail_rows(win, rows_start + drawn, x, max(0, row_space - drawn), w, rows, colors)
+        return
+    draw_memory_detail_rows(win, rows_start, x, row_space, w, rows, colors)
 
 
 def draw_power_section(
@@ -2607,10 +3078,7 @@ def draw_power_section(
         if max_x > avg_x:
             safe_addstr(win, yy, avg_x, f"{fmt_power(avg):>{value_w}}"[-value_w:], colors["fg"])
             safe_addstr(win, yy, max_x, f"{fmt_power(peak):>{value_w}}"[-value_w:], colors["warn"] if peak else colors["muted"])
-    extra_rows = [
-        ("Media", fmt_power(sample.media_power_mw)),
-        ("Battery", fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw))),
-    ]
+    extra_rows = [("Battery", fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw)))]
     start = y + 2 + min(len(rows), max(0, h - 4))
     for idx, (name, value) in enumerate(extra_rows[: max(0, y + h - 1 - start)]):
         yy = start + idx
@@ -2651,6 +3119,42 @@ def draw_battery_section(
             attr = colors["warn"]
         elif name == "Health" and battery.health_pct is not None:
             attr = colors["good"] if battery.health_pct >= 80 else colors["warn"]
+        safe_addstr(win, y + idx, x + min(12, max(8, w // 3)), value[: max(1, w - 14)], attr)
+
+
+def draw_usb_c_section(
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    usb_c: UsbCStats,
+    colors: dict[str, int],
+) -> None:
+    if h < 3 or w < 24:
+        return
+    active = usb_c.active_port
+    state = "charging" if usb_c.charging else "plugged" if usb_c.external_connected else "no input"
+    if active and active.connected and not usb_c.external_connected:
+        state = "PD active"
+    contract_power = first_non_none(usb_c.system_power_w, active.power_w if active else None)
+    rows: list[tuple[str, str, int]] = [
+        ("State", state, colors["good"] if usb_c.external_connected or (active and active.connected) else colors["muted"]),
+        ("Port", active.label if active else "n/a", colors["fg"]),
+        ("Voltage", fmt_voltage(first_non_none(usb_c.system_voltage_v, active.voltage_v if active else None)), colors["fg"]),
+        ("Current", fmt_current(first_non_none(usb_c.system_current_a, active.current_a if active else None)), colors["fg"]),
+        ("Power", fmt_watts(contract_power), colors["warn"] if contract_power and contract_power >= 60 else colors["fg"]),
+        ("Adapter", fmt_watts(usb_c.adapter_power_w) if usb_c.adapter_power_w is not None else (usb_c.adapter_name or "n/a"), colors["fg"]),
+        ("Cable", active.cable if active else "unknown", colors["muted"]),
+    ]
+    if active and active.max_power_w is not None:
+        rows.append(("PD max", fmt_watts(active.max_power_w), colors["fg"]))
+    if active and active.pdo_labels:
+        rows.append(("PDOs", " | ".join(active.pdo_labels[:4]), colors["fg"]))
+    elif usb_c.ports:
+        rows.append(("Ports", str(len(usb_c.ports)), colors["fg"]))
+    for idx, (name, value, attr) in enumerate(rows[:h]):
+        safe_addstr(win, y + idx, x, name, colors["muted"])
         safe_addstr(win, y + idx, x + min(12, max(8, w // 3)), value[: max(1, w - 14)], attr)
 
 
@@ -3018,6 +3522,7 @@ def draw_help_overlay(win: curses.window, colors: dict[str, int]) -> None:
         ("s/c/g/a", "lower power", "select SoC/CPU/GPU/ANE"),
         ("u / n", "power cycle", "cycle upper/lower power graph"),
         ("L", "load view", "toggle CPU/GPU avg rows/graph"),
+        ("b", "charge panel", "toggle Battery/USB-C in full layout"),
         ("p", "process panel", "hidden -> left -> right"),
         ("Up/Down", "process select", "move process cursor"),
         ("Left/Right", "process sort", "cycle CPU/RAM/PID/name"),
@@ -3065,6 +3570,7 @@ def menu_value_text(
     load_view: str,
     process_panel: str,
     process_sort: str,
+    charge_panel: str,
 ) -> str:
     if item_id == "theme":
         return args.theme
@@ -3088,6 +3594,8 @@ def menu_value_text(
         return process_panel
     if item_id == "process_sort":
         return process_sort
+    if item_id == "charge_panel":
+        return charge_panel
     if item_id == "allow_root_kill":
         return "on" if bool(getattr(args, "allow_root_kill", False)) else "off"
     if item_id == "alert_temp":
@@ -3111,6 +3619,7 @@ def draw_menu_overlay(
     load_view: str,
     process_panel: str,
     process_sort: str,
+    charge_panel: str,
 ) -> None:
     max_y, max_x = win.getmaxyx()
     label_w = max(len("Setting"), max(len(label) for _, label, _ in MENU_ITEMS))
@@ -3142,7 +3651,18 @@ def draw_menu_overlay(
         active = idx == selected
         attr = colors["warn"] | curses.A_BOLD if active else colors["fg"]
         marker = ">" if active else " "
-        value = menu_value_text(item_id, args, upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view, process_panel, process_sort)
+        value = menu_value_text(
+            item_id,
+            args,
+            upper_power_mode,
+            lower_power_mode,
+            upper_io_mode,
+            lower_io_mode,
+            load_view,
+            process_panel,
+            process_sort,
+            charge_panel,
+        )
         safe_addstr(win, yy, x + 2, marker, colors["warn"] | curses.A_BOLD if active else colors["muted"])
         safe_addstr(win, yy, x + 4, f"{label:<{label_w}}"[:label_w], attr)
         safe_addstr(win, yy, x + 6 + label_w, f"{value:<{value_w}}"[:value_w], attr)
@@ -3166,6 +3686,7 @@ def draw_modal_overlays(
     load_view: str,
     process_panel: str,
     process_sort: str,
+    charge_panel: str,
 ) -> None:
     if help_visible:
         draw_help_overlay(win, colors)
@@ -3182,6 +3703,7 @@ def draw_modal_overlays(
             load_view,
             process_panel,
             process_sort,
+            charge_panel,
         )
 
 
@@ -3191,6 +3713,7 @@ def draw_dashboard(
     history: History,
     memory: MemoryStats,
     battery: BatteryStats,
+    usb_c: UsbCStats,
     io_stats: IoStats,
     processes: list[ProcessInfo],
     colors: dict[str, int],
@@ -3203,6 +3726,7 @@ def draw_dashboard(
     load_view: str,
     process_panel: str,
     process_sort: str,
+    charge_panel: str,
     process_selected: int,
     pending_kill_pid: int | None,
     help_visible: bool,
@@ -3216,9 +3740,8 @@ def draw_dashboard(
         stdscr.refresh()
         return
 
+    draw_header(stdscr, args, colors)
     if sample is None:
-        title = f" {APP_NAME} {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  q quit  m menu  ? help "
-        safe_addstr(stdscr, 0, 1, title[: max_x - 2], colors["bold"])
         logo_y = max(3, (max_y - len(LOGO_LINES)) // 2 - 2)
         drawn_h = draw_logo(stdscr, logo_y, 0, max_x, colors)
         wait_text = "waiting for first powermetrics sample"
@@ -3237,16 +3760,12 @@ def draw_dashboard(
             load_view,
             process_panel,
             process_sort,
+            charge_panel,
         )
         stdscr.refresh()
         return
 
     sample = sample or MetricSample(warning="waiting for powermetrics sample")
-    title = (
-        f" {APP_NAME} {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  "
-        "q quit  m menu  ? help  +/- interval  p proc  u/n power  L avg "
-    )
-    safe_addstr(stdscr, 0, 1, title[: max_x - 2], colors["bold"])
     alerts = build_alerts(sample, memory, battery, args)
     status_attr = colors["bad"] | curses.A_BOLD if any(alert in ("THROTTLE",) for alert in alerts) else colors["warn"] if alerts else colors["muted"]
     source_text = source_status(args, sample, battery, processes)
@@ -3290,8 +3809,22 @@ def draw_dashboard(
         battery_y = info_y + top_h
         battery_h = max_y - battery_y - 1
         if battery_h >= 5:
-            draw_box(stdscr, battery_y, 0, battery_h, max_x, "BATTERY", colors["accent"])
-            draw_battery_section(stdscr, battery_y + 1, 2, battery_h - 2, max_x - 4, battery, colors)
+            if max_x >= 100:
+                half = max_x // 2
+                draw_hotkey_box(stdscr, battery_y, 0, battery_h, half, "BATTERY", colors["accent"], colors, "b")
+                draw_hotkey_box(stdscr, battery_y, half, battery_h, max_x - half, "USB-C", colors["accent"], colors, "b")
+                draw_battery_section(stdscr, battery_y + 1, 2, battery_h - 2, half - 4, battery, colors)
+                draw_usb_c_section(stdscr, battery_y + 1, half + 2, battery_h - 2, max_x - half - 4, usb_c, colors)
+            elif battery_h >= 6:
+                upper_h = max(3, battery_h // 2)
+                lower_h = battery_h - upper_h
+                draw_hotkey_box(stdscr, battery_y, 0, upper_h, max_x, "BATTERY", colors["accent"], colors, "b")
+                draw_battery_section(stdscr, battery_y + 1, 2, upper_h - 2, max_x - 4, battery, colors)
+                draw_hotkey_box(stdscr, battery_y + upper_h, 0, lower_h, max_x, "USB-C", colors["accent"], colors, "b")
+                draw_usb_c_section(stdscr, battery_y + upper_h + 1, 2, lower_h - 2, max_x - 4, usb_c, colors)
+            else:
+                draw_hotkey_box(stdscr, battery_y, 0, battery_h, max_x, "USB-C", colors["accent"], colors, "b")
+                draw_usb_c_section(stdscr, battery_y + 1, 2, battery_h - 2, max_x - 4, usb_c, colors)
         if sample.warning:
             safe_addstr(stdscr, max_y - 1, 1, sample.warning[: max_x - 2], colors["warn"])
         draw_modal_overlays(
@@ -3308,6 +3841,7 @@ def draw_dashboard(
             load_view,
             process_panel,
             process_sort,
+            charge_panel,
         )
         stdscr.refresh()
         return
@@ -3320,7 +3854,7 @@ def draw_dashboard(
             draw_box(stdscr, detail_y, 0, detail_h, half, "BATTERY", colors["accent"])
             draw_box(stdscr, detail_y, half, detail_h, max_x - half, "RAM", colors["accent"])
             draw_battery_section(stdscr, detail_y + 1, 2, detail_h - 2, half - 4, battery, colors)
-            draw_memory_section(stdscr, detail_y + 1, half + 2, detail_h - 2, max_x - half - 4, memory, colors)
+            draw_memory_section(stdscr, detail_y + 1, half + 2, detail_h - 2, max_x - half - 4, memory, sample, colors)
         if sample.warning:
             safe_addstr(stdscr, max_y - 1, 1, sample.warning[: max_x - 2], colors["warn"])
         draw_modal_overlays(
@@ -3337,6 +3871,7 @@ def draw_dashboard(
             load_view,
             process_panel,
             process_sort,
+            charge_panel,
         )
         stdscr.refresh()
         return
@@ -3399,11 +3934,15 @@ def draw_dashboard(
     elif ram_h >= 3:
         ram_y = y2 + clocks_h
         draw_box(stdscr, ram_y, bottom_left, ram_h, right_w, "RAM", colors["accent"])
-        draw_memory_section(stdscr, ram_y + 1, bottom_left + 2, ram_h - 2, right_w - 4, memory, colors)
+        draw_memory_section(stdscr, ram_y + 1, bottom_left + 2, ram_h - 2, right_w - 4, memory, sample, colors)
     if battery_h >= 3:
         battery_y = y2 + clocks_h + ram_h
-        draw_box(stdscr, battery_y, bottom_left, battery_h, right_w, "BATTERY", colors["accent"])
-        draw_battery_section(stdscr, battery_y + 1, bottom_left + 2, battery_h - 2, right_w - 4, battery, colors)
+        if charge_panel == "usb":
+            draw_hotkey_box(stdscr, battery_y, bottom_left, battery_h, right_w, "USB-C", colors["accent"], colors, "b")
+            draw_usb_c_section(stdscr, battery_y + 1, bottom_left + 2, battery_h - 2, right_w - 4, usb_c, colors)
+        else:
+            draw_hotkey_box(stdscr, battery_y, bottom_left, battery_h, right_w, "BATTERY", colors["accent"], colors, "b")
+            draw_battery_section(stdscr, battery_y + 1, bottom_left + 2, battery_h - 2, right_w - 4, battery, colors)
     if io_h >= 3:
         io_y = y2 + clocks_h + ram_h + battery_h
         draw_box(stdscr, io_y, bottom_left, io_h, right_w, "DISK / NET", colors["accent"])
@@ -3437,6 +3976,7 @@ def draw_dashboard(
         load_view,
         process_panel,
         process_sort,
+        charge_panel,
     )
     stdscr.refresh()
 
@@ -3453,12 +3993,15 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     sample_queue: queue.Queue[MetricSample] = queue.Queue()
     side_queue: queue.Queue[SideMetricsUpdate] = queue.Queue()
     side_stop = threading.Event()
+    side_poll_state = SideMetricsPollState()
+    sudo_keeper = SudoKeeper()
     stream: MockStream | PowerMetricsStream
     worker: threading.Thread
     latest: MetricSample | None = None
     freq_cache: dict[str, float] = {}
     memory_stats = MemoryStats()
     battery_stats = BatteryStats()
+    usb_c_stats = UsbCStats()
     processes: list[ProcessInfo] = []
     io_stats = IoStats()
     upper_power_mode = args.upper_power_mode if args.upper_power_mode in POWER_MODES else "soc"
@@ -3468,6 +4011,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     load_view = args.load_view if args.load_view in LOAD_VIEWS else "rows"
     process_panel = args.process_panel if args.process_panel in PROCESS_PANEL_MODES else "hidden"
     process_sort = args.process_sort if args.process_sort in PROCESS_SORTS else "cpu"
+    charge_panel = args.charge_panel if args.charge_panel in CHARGE_PANEL_MODES else "battery"
     process_selected = 0
     pending_kill: PendingKill | None = None
     help_visible = False
@@ -3485,15 +4029,26 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         args.upper_io_mode = upper_io_mode
         args.lower_io_mode = lower_io_mode
         args.load_view = load_view
+        args.charge_panel = charge_panel
         error = save_settings(args)
         if error:
             status = f"settings not saved: {error}"
             return False
         return True
 
+    def io_poll_visible() -> bool:
+        return bool(args.show_io and args.layout not in {"power-only", "thermals-only"})
+
+    def process_poll_visible() -> bool:
+        return bool(args.layout == "full" and process_panel != "hidden")
+
+    def update_side_polling() -> None:
+        side_poll_state.update(io_poll_visible(), process_poll_visible())
+
     def apply_menu_change(delta: int) -> None:
         nonlocal upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view
-        nonlocal process_panel, process_sort, colors, stream, worker, status
+        nonlocal io_stats, processes
+        nonlocal process_panel, process_sort, charge_panel, colors, stream, worker, status
         item_id = MENU_ITEMS[menu_selected][0]
         step = 1 if delta >= 0 else -1
         if item_id == "theme":
@@ -3502,6 +4057,10 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             colors = init_colors(args.theme)
         elif item_id == "layout":
             args.layout = cycle_value(LAYOUTS, args.layout, step)
+            if not process_poll_visible():
+                processes = []
+            if not io_poll_visible():
+                io_stats = IoStats()
         elif item_id == "interval":
             if step > 0:
                 args.interval = round(min(MAX_INTERVAL, args.interval + interval_step(args.interval)), 1)
@@ -3510,6 +4069,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             restart_stream()
         elif item_id == "show_io":
             args.show_io = not args.show_io
+            if not args.show_io:
+                io_stats = IoStats()
         elif item_id == "upper_power":
             upper_power_mode = cycle_value(POWER_MODES, upper_power_mode, step)
         elif item_id == "lower_power":
@@ -3522,8 +4083,12 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             load_view = cycle_value(LOAD_VIEWS, load_view, step)
         elif item_id == "process_panel":
             process_panel = cycle_value(PROCESS_PANEL_MODES, process_panel, step)
+            if not process_poll_visible():
+                processes = []
         elif item_id == "process_sort":
             process_sort = cycle_value(PROCESS_SORTS, process_sort, step)
+        elif item_id == "charge_panel":
+            charge_panel = cycle_value(CHARGE_PANEL_MODES, charge_panel, step)
         elif item_id == "allow_root_kill":
             args.allow_root_kill = not bool(getattr(args, "allow_root_kill", False))
         elif item_id == "alert_temp":
@@ -3532,7 +4097,11 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             args.alert_swap_gib = round(clamp(float(args.alert_swap_gib) + step * 0.25, 0.0, 1024.0), 2)
         elif item_id == "alert_battery":
             args.alert_battery_drain_w = round(clamp(float(args.alert_battery_drain_w) + step * 1.0, 0.0, 250.0), 1)
-        status = f"menu {MENU_ITEMS[menu_selected][1]} {menu_value_text(item_id, args, upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view, process_panel, process_sort)}"
+        status = (
+            f"menu {MENU_ITEMS[menu_selected][1]} "
+            f"{menu_value_text(item_id, args, upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view, process_panel, process_sort, charge_panel)}"
+        )
+        update_side_polling()
         save_ui_settings()
 
     def make_stream() -> MockStream | PowerMetricsStream:
@@ -3561,7 +4130,10 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         stream, worker = start_stream()
 
     stream, worker = start_stream()
-    side_worker = threading.Thread(target=side_metrics_worker, args=(side_queue, side_stop), daemon=True)
+    update_side_polling()
+    if not args.mock:
+        sudo_keeper.start()
+    side_worker = threading.Thread(target=side_metrics_worker, args=(side_queue, side_stop, side_poll_state), daemon=True)
     side_worker.start()
     themes = list(THEMES)
     layouts = list(LAYOUTS)
@@ -3569,6 +4141,9 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     try:
         while True:
             _, max_x = stdscr.getmaxyx()
+            update_side_polling()
+            if sudo_keeper.last_error:
+                status = f"sudo refresh failed: {sudo_keeper.last_error}"
             history.resize(max(args.history, max_x * 2))
             while True:
                 try:
@@ -3586,6 +4161,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                         memory_stats = update.memory
                     if update.battery is not None:
                         battery_stats = update.battery
+                    if update.usb_c is not None:
+                        usb_c_stats = update.usb_c
                     if update.io_stats is not None:
                         io_stats = update.io_stats
                         history.add_io(io_stats)
@@ -3601,6 +4178,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 history,
                 memory_stats,
                 battery_stats,
+                usb_c_stats,
                 io_stats,
                 processes,
                 colors,
@@ -3613,6 +4191,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 load_view,
                 process_panel,
                 process_sort,
+                charge_panel,
                 process_selected,
                 pending_kill.pid if pending_kill else None,
                 help_visible,
@@ -3670,14 +4249,24 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 index = (layouts.index(args.layout) + 1) % len(layouts)
                 args.layout = layouts[index]
                 status = f"layout {args.layout}"
+                if not process_poll_visible():
+                    processes = []
+                if not io_poll_visible():
+                    io_stats = IoStats()
+                update_side_polling()
                 save_ui_settings()
             elif key in (ord("d"), ord("D")):
                 args.show_io = not args.show_io
                 status = "disk/net shown" if args.show_io else "disk/net hidden"
                 io_stats = IoStats()
+                update_side_polling()
                 save_ui_settings()
             elif key in (ord("l"), ord("L")):
                 load_view = "graph" if load_view == "rows" else "rows"
+                save_ui_settings()
+            elif key in (ord("b"), ord("B")):
+                charge_panel = "usb" if charge_panel == "battery" else "battery"
+                status = f"charge panel {charge_panel}"
                 save_ui_settings()
             elif key in (ord("i"), ord("I")):
                 index = (IO_MODES.index(upper_io_mode) + 1) % len(IO_MODES)
@@ -3774,6 +4363,9 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 process_selected = min(process_selected, max(0, len(processes) - 1))
                 pending_kill = None
                 status = f"process panel {process_panel}"
+                if not process_poll_visible():
+                    processes = []
+                update_side_polling()
                 save_ui_settings()
             elif key == ord("n"):
                 index = (POWER_MODES.index(lower_power_mode) + 1) % len(POWER_MODES)
@@ -3787,6 +4379,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         save_ui_settings()
         side_stop.set()
         stream.stop()
+        sudo_keeper.stop()
         side_worker.join(timeout=0.5)
 
 
@@ -3832,6 +4425,9 @@ def print_sample(sample: MetricSample) -> None:
     print(f"Temp avg:     {fmt_temp(sample.soc_temp_c)}")
     print(f"Temp max:     {fmt_temp(sample.temp_max_c)}")
     print(f"Battery:      {fmt_power(sample.battery_power_mw)}")
+    if sample.memory_bandwidth_gbps:
+        bandwidth = ", ".join(f"{name} {value}" for name, value in memory_bandwidth_rows(sample))
+        print(f"Mem BW:       {bandwidth}")
     print(f"Thermal:      {sample.thermal_pressure or 'n/a'}")
     print(f"Throttled:    {sample.throttled if sample.throttled is not None else 'unknown'}")
     if sample.throttle_reasons:
@@ -3852,6 +4448,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-io", action="store_true", default=settings.get("show_io", False), help="show compact disk/network panel")
     parser.add_argument("--mock", action="store_true", help="run with generated demo data")
     parser.add_argument("--remove-settings", action="store_true", help="remove the saved user settings file and exit")
+    parser.add_argument("--allow-root-ui", action="store_true", help="allow the full terminal UI to run as root")
     parser.set_defaults(
         upper_power_mode=settings.get("upper_power_mode", "soc"),
         lower_power_mode=settings.get("lower_power_mode", "cpu"),
@@ -3860,6 +4457,7 @@ def build_parser() -> argparse.ArgumentParser:
         load_view=settings.get("load_view", "rows"),
         process_panel=settings.get("process_panel", "hidden"),
         process_sort=settings.get("process_sort", "cpu"),
+        charge_panel=settings.get("charge_panel", "battery"),
         allow_root_kill=settings.get("allow_root_kill", False),
         alert_temp_c=settings.get("alert_temp_c", HIGH_TEMP_C),
         alert_swap_gib=settings.get("alert_swap_gib", DEFAULT_ALERT_SWAP_GIB),
@@ -3889,6 +4487,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "probe":
         return run_probe(args)
 
+    ensure_ui_not_root(args)
     ensure_powermetrics_access(args)
     curses.wrapper(run_curses, args)
     return 0
