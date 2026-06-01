@@ -1,4 +1,5 @@
 import argparse
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,7 +78,7 @@ class SettingsTests(unittest.TestCase):
     def test_save_and_load_all_interactive_settings(self) -> None:
         old_path = asmond.SETTINGS_PATH
         with tempfile.TemporaryDirectory() as tmp_dir:
-            asmond.SETTINGS_PATH = Path(tmp_dir) / ".asmond.json"
+            asmond.SETTINGS_PATH = Path(tmp_dir) / "settings.json"
             try:
                 args = argparse.Namespace(
                     theme="dracula",
@@ -91,6 +92,7 @@ class SettingsTests(unittest.TestCase):
                     load_view="graph",
                     process_panel="right",
                     process_sort="ram",
+                    allow_root_kill=True,
                     alert_temp_c=90.0,
                     alert_swap_gib=2.5,
                     alert_battery_drain_w=20.0,
@@ -110,6 +112,7 @@ class SettingsTests(unittest.TestCase):
                         "load_view": "graph",
                         "process_panel": "right",
                         "process_sort": "ram",
+                        "allow_root_kill": True,
                         "alert_temp_c": 90.0,
                         "alert_swap_gib": 2.5,
                         "alert_battery_drain_w": 20.0,
@@ -137,6 +140,30 @@ class SettingsTests(unittest.TestCase):
             "1.50 GiB",
         )
 
+    def test_default_settings_path_uses_application_support(self) -> None:
+        old_env = os.environ.get(asmond.SETTINGS_DIR_ENV)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            os.environ[asmond.SETTINGS_DIR_ENV] = tmp_dir
+            try:
+                self.assertEqual(asmond.default_settings_path(), Path(tmp_dir) / "settings.json")
+            finally:
+                if old_env is None:
+                    os.environ.pop(asmond.SETTINGS_DIR_ENV, None)
+                else:
+                    os.environ[asmond.SETTINGS_DIR_ENV] = old_env
+
+    def test_remove_settings_deletes_file(self) -> None:
+        old_path = asmond.SETTINGS_PATH
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            asmond.SETTINGS_PATH = Path(tmp_dir) / "Asmond" / "settings.json"
+            try:
+                asmond.SETTINGS_PATH.parent.mkdir()
+                asmond.SETTINGS_PATH.write_text("{}", encoding="utf-8")
+                self.assertIsNone(asmond.remove_settings())
+                self.assertFalse(asmond.SETTINGS_PATH.exists())
+            finally:
+                asmond.SETTINGS_PATH = old_path
+
 
 class ProcessTests(unittest.TestCase):
     def test_parse_process_line_accepts_decimal_comma(self) -> None:
@@ -155,6 +182,14 @@ class ProcessTests(unittest.TestCase):
         assert process is not None
         self.assertEqual(process.ppid, 1)
         self.assertEqual(process.etime, "02:03")
+        self.assertEqual(process.full_command, "/usr/bin/python3")
+
+    def test_parse_process_line_with_user(self) -> None:
+        process = asmond.parse_process_line("123 user 1 02:03 12.5 3.4 45678 /usr/bin/python3")
+        self.assertIsNotNone(process)
+        assert process is not None
+        self.assertEqual(process.user, "user")
+        self.assertEqual(process.ppid, 1)
         self.assertEqual(process.full_command, "/usr/bin/python3")
 
     def test_sort_processes_by_cpu_and_ram(self) -> None:

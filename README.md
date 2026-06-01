@@ -44,6 +44,8 @@ Run:
 sudo asmond
 ```
 
+Asmond keeps the terminal UI unprivileged and starts only `powermetrics` with `sudo`.
+
 ## Usage
 
 Run the dashboard:
@@ -109,7 +111,28 @@ k       mark selected process, press k again to send TERM
 
 In the settings menu, use Up/Down or Tab to move, Left/Right or Enter to change a value, `s` to save and Esc to close.
 
-Settings are saved in `.asmond.json` next to `asmond.py`.
+Process termination uses the current user's permissions. If Asmond is launched as root, process termination is disabled by default and can be explicitly enabled in the settings menu.
+
+Settings are saved in:
+
+```text
+~/Library/Application Support/Asmond/settings.json
+```
+
+When Asmond is launched via `sudo`, the settings path is resolved through `SUDO_USER` so the file still belongs to the real user.
+
+Remove saved settings:
+
+```bash
+asmond --remove-settings
+```
+
+Homebrew does not remove per-user settings automatically on uninstall. To remove everything:
+
+```bash
+asmond --remove-settings
+brew uninstall asmond
+```
 
 ## Themes
 

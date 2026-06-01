@@ -15,6 +15,7 @@ import json
 import math
 import os
 import plistlib
+import pwd
 import queue
 import random
 import re
@@ -31,7 +32,7 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Asmond"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 POWER_SAMPLERS = "cpu_power,gpu_power,ane_power,thermal,battery"
 ANE_MAX_POWER_MW = 8000.0
 IOHID_TEMP_TYPE = 15
@@ -60,6 +61,7 @@ MENU_ITEMS = (
     ("load_view", "Load view", "CPU/GPU avg rows or graph"),
     ("process_panel", "Processes", "Full layout process panel"),
     ("process_sort", "Proc sort", "Process sort key"),
+    ("allow_root_kill", "Root kill", "Allow process kill when running as root"),
     ("alert_temp", "Temp alert", "High temperature threshold"),
     ("alert_swap", "Swap alert", "Swap-used threshold"),
     ("alert_battery", "Battery alert", "Battery drain threshold"),
@@ -76,7 +78,8 @@ LOGO_LINES = (
 )
 LOGO_WIDTH = max(len(line) for line in LOGO_LINES)
 LOGO_SPLIT = 22
-SETTINGS_PATH = Path(__file__).with_name(".asmond.json")
+SETTINGS_DIR_ENV = "ASMOND_SETTINGS_DIR"
+SETTINGS_FILENAME = "settings.json"
 BRAILLE_LEFT_DOTS = (0x40, 0x04, 0x02, 0x01)
 BRAILLE_RIGHT_DOTS = (0x80, 0x20, 0x10, 0x08)
 HIGH_TEMP_C = 85.0
@@ -87,6 +90,9 @@ DEFAULT_ALERT_BATTERY_DRAIN_W = HIGH_BATTERY_DRAIN_MW / 1000.0
 KILL_CONFIRM_SECONDS = 3.0
 MIN_INTERVAL = 0.1
 MAX_INTERVAL = 10.0
+MEMORY_BATTERY_INTERVAL = 2.0
+IO_POLL_INTERVAL = 1.0
+PROCESS_POLL_INTERVAL = 2.0
 
 
 THEMES = {
@@ -172,6 +178,49 @@ class CoreMetric:
     freq_mhz: float | None = None
 
 
+def real_user_home() -> Path:
+    if os.name != "posix":
+        return Path.home()
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and sudo_user != "root":
+            try:
+                return Path(pwd.getpwnam(sudo_user).pw_dir)
+            except Exception:
+                pass
+    return Path.home()
+
+
+def default_settings_path() -> Path:
+    override = os.environ.get(SETTINGS_DIR_ENV)
+    if override:
+        return Path(override).expanduser() / SETTINGS_FILENAME
+    return real_user_home() / "Library" / "Application Support" / APP_NAME / SETTINGS_FILENAME
+
+
+SETTINGS_PATH = default_settings_path()
+
+
+def settings_owner() -> tuple[int, int] | None:
+    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    sudo_uid = os.environ.get("SUDO_UID")
+    sudo_gid = os.environ.get("SUDO_GID")
+    if sudo_uid and sudo_gid:
+        try:
+            return int(sudo_uid), int(sudo_gid)
+        except ValueError:
+            return None
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and sudo_user != "root":
+        try:
+            info = pwd.getpwnam(sudo_user)
+            return info.pw_uid, info.pw_gid
+        except Exception:
+            return None
+    return None
+
+
 def load_settings() -> dict[str, Any]:
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -213,6 +262,9 @@ def load_settings() -> dict[str, Any]:
     process_sort = data.get("process_sort")
     if isinstance(process_sort, str) and process_sort in PROCESS_SORTS:
         settings["process_sort"] = process_sort
+    allow_root_kill = data.get("allow_root_kill")
+    if isinstance(allow_root_kill, bool):
+        settings["allow_root_kill"] = allow_root_kill
     alert_temp_c = data.get("alert_temp_c")
     if isinstance(alert_temp_c, int | float):
         settings["alert_temp_c"] = float(clamp(float(alert_temp_c), 40.0, 125.0))
@@ -230,7 +282,7 @@ def setting_choice(args: argparse.Namespace, name: str, default: str, choices: t
     return value if isinstance(value, str) and value in choices else default
 
 
-def save_settings(args: argparse.Namespace) -> None:
+def save_settings(args: argparse.Namespace) -> str | None:
     data = {
         "theme": args.theme if args.theme in THEMES else "classic",
         "interval": round(float(args.interval), 2),
@@ -243,29 +295,51 @@ def save_settings(args: argparse.Namespace) -> None:
         "load_view": setting_choice(args, "load_view", "rows", LOAD_VIEWS),
         "process_panel": setting_choice(args, "process_panel", "hidden", PROCESS_PANEL_MODES),
         "process_sort": setting_choice(args, "process_sort", "cpu", PROCESS_SORTS),
+        "allow_root_kill": bool(getattr(args, "allow_root_kill", False)),
         "alert_temp_c": round(float(getattr(args, "alert_temp_c", HIGH_TEMP_C)), 1),
         "alert_swap_gib": round(float(getattr(args, "alert_swap_gib", DEFAULT_ALERT_SWAP_GIB)), 2),
         "alert_battery_drain_w": round(float(getattr(args, "alert_battery_drain_w", DEFAULT_ALERT_BATTERY_DRAIN_W)), 1),
     }
     tmp_path = SETTINGS_PATH.with_suffix(f"{SETTINGS_PATH.suffix}.tmp")
     try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        owner = settings_owner()
+        if owner is not None:
+            try:
+                os.chown(SETTINGS_PATH.parent, *owner)
+            except Exception:
+                pass
         tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        try:
-            source_stat = Path(__file__).stat()
-            os.chown(tmp_path, source_stat.st_uid, source_stat.st_gid)
-        except Exception:
-            pass
+        if owner is not None:
+            try:
+                os.chown(tmp_path, *owner)
+            except Exception:
+                pass
         os.replace(tmp_path, SETTINGS_PATH)
-        try:
-            source_stat = Path(__file__).stat()
-            os.chown(SETTINGS_PATH, source_stat.st_uid, source_stat.st_gid)
-        except Exception:
-            pass
-    except Exception:
+        if owner is not None:
+            try:
+                os.chown(SETTINGS_PATH, *owner)
+            except Exception:
+                pass
+        return None
+    except Exception as exc:
         try:
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
+        return str(exc)
+
+
+def remove_settings() -> str | None:
+    try:
+        SETTINGS_PATH.unlink(missing_ok=True)
+        try:
+            SETTINGS_PATH.parent.rmdir()
+        except OSError:
+            pass
+        return None
+    except Exception as exc:
+        return str(exc)
 
 
 @dataclass
@@ -366,6 +440,37 @@ class ProcessInfo:
     ppid: int | None = None
     etime: str = ""
     full_command: str = ""
+    user: str = ""
+
+
+@dataclass
+class SideMetricsUpdate:
+    memory: MemoryStats | None = None
+    battery: BatteryStats | None = None
+    io_stats: IoStats | None = None
+    processes: list[ProcessInfo] | None = None
+
+
+@dataclass
+class PendingKill:
+    pid: int
+    ppid: int | None
+    user: str
+    full_command: str
+    command: str
+    until: float
+
+    @classmethod
+    def from_process(cls, process: ProcessInfo, until: float) -> "PendingKill":
+        return cls(process.pid, process.ppid, process.user, process.full_command, process.command, until)
+
+    def matches(self, process: ProcessInfo) -> bool:
+        return (
+            self.pid == process.pid
+            and self.ppid == process.ppid
+            and self.user == process.user
+            and self.full_command == process.full_command
+        )
 
 
 def bytes_from_pages(pages: int | float, page_size: int) -> int:
@@ -1238,16 +1343,26 @@ def io_stats_from_snapshots(previous: IoSnapshot | None, current: IoSnapshot) ->
 
 
 def parse_process_line(line: str) -> ProcessInfo | None:
-    parts = line.strip().split(None, 6)
-    has_extended_columns = len(parts) >= 7 and parts[1].isdigit() and re.match(r"^(?:\d+-)?\d{1,2}:\d{2}(?::\d{2})?$", parts[2])
-    if has_extended_columns:
-        pid_text, ppid_text, etime, cpu_text, mem_text, rss_text, command_text = parts
-    elif len(parts) >= 5:
-        pid_text, cpu_text, mem_text, rss_text, command_text = line.strip().split(None, 4)
-        ppid_text = ""
-        etime = ""
+    parts_with_user = line.strip().split(None, 7)
+    has_user_columns = (
+        len(parts_with_user) >= 8
+        and parts_with_user[2].isdigit()
+        and re.match(r"^(?:\d+-)?\d{1,2}:\d{2}(?::\d{2})?$", parts_with_user[3])
+    )
+    user = ""
+    if has_user_columns:
+        pid_text, user, ppid_text, etime, cpu_text, mem_text, rss_text, command_text = parts_with_user
     else:
-        return None
+        parts = line.strip().split(None, 6)
+        has_extended_columns = len(parts) >= 7 and parts[1].isdigit() and re.match(r"^(?:\d+-)?\d{1,2}:\d{2}(?::\d{2})?$", parts[2])
+        if has_extended_columns:
+            pid_text, ppid_text, etime, cpu_text, mem_text, rss_text, command_text = parts
+        elif len(parts) >= 5:
+            pid_text, cpu_text, mem_text, rss_text, command_text = line.strip().split(None, 4)
+            ppid_text = ""
+            etime = ""
+        else:
+            return None
     try:
         pid = int(pid_text)
     except ValueError:
@@ -1262,14 +1377,14 @@ def parse_process_line(line: str) -> ProcessInfo | None:
     if cpu_pct is None or mem_pct is None or rss_kib is None:
         return None
     command = os.path.basename(command_text) or command_text
-    return ProcessInfo(pid, cpu_pct, mem_pct, int(rss_kib), command, ppid, etime, command_text)
+    return ProcessInfo(pid, cpu_pct, mem_pct, int(rss_kib), command, ppid, etime, command_text, user)
 
 
 def read_processes() -> list[ProcessInfo]:
     commands = (
-        ["/bin/ps", "-axo", "pid=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
-        ["/bin/ps", "-axo", "pid=,ppid=,etime=,pcpu=,pmem=,rss=,command="],
-        ["ps", "-axo", "pid=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
+        ["/bin/ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
+        ["/bin/ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,command="],
+        ["ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
     )
     processes: list[ProcessInfo] = []
     for command in commands:
@@ -1287,6 +1402,43 @@ def read_processes() -> list[ProcessInfo]:
         if processes:
             break
     return processes
+
+
+def side_metrics_worker(updates: queue.Queue[SideMetricsUpdate], stop_event: threading.Event) -> None:
+    previous_io: IoSnapshot | None = None
+    next_memory = 0.0
+    next_io = 0.0
+    next_process = 0.0
+    while not stop_event.is_set():
+        now = time.monotonic()
+        slept = False
+        if now >= next_memory:
+            try:
+                updates.put(SideMetricsUpdate(memory=read_memory_stats(), battery=read_battery_stats()))
+            except Exception:
+                pass
+            next_memory = time.monotonic() + MEMORY_BATTERY_INTERVAL
+        now = time.monotonic()
+        if now >= next_io:
+            try:
+                current_io = read_io_snapshot()
+                updates.put(SideMetricsUpdate(io_stats=io_stats_from_snapshots(previous_io, current_io)))
+                previous_io = current_io
+            except Exception:
+                pass
+            next_io = time.monotonic() + IO_POLL_INTERVAL
+        now = time.monotonic()
+        if now >= next_process:
+            try:
+                updates.put(SideMetricsUpdate(processes=read_processes()))
+            except Exception:
+                pass
+            next_process = time.monotonic() + PROCESS_POLL_INTERVAL
+        next_due = min(next_memory, next_io, next_process)
+        timeout = max(0.05, min(0.5, next_due - time.monotonic()))
+        slept = stop_event.wait(timeout)
+        if slept:
+            break
 
 
 def sorted_processes(processes: list[ProcessInfo], sort_key: str) -> list[ProcessInfo]:
@@ -1452,6 +1604,46 @@ class HIDTemperatureReader:
 HID_TEMPS = HIDTemperatureReader()
 
 
+def is_root_process() -> bool:
+    return os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def powermetrics_command(interval_ms: int, sample_count: int | str) -> list[str]:
+    command = [
+        "powermetrics",
+        "--samplers",
+        POWER_SAMPLERS,
+        "--sample-rate",
+        str(interval_ms),
+        "--sample-count",
+        str(sample_count),
+        "--format",
+        "plist",
+        "--buffer-size",
+        "1",
+        "--poweravg",
+        "1",
+        "--show-plimits",
+        "--show-extra-power-info",
+        "--handle-invalid-values",
+    ]
+    if os.name == "posix" and not is_root_process():
+        return ["sudo", "-n", *command]
+    return command
+
+
+def ensure_powermetrics_access(args: argparse.Namespace) -> None:
+    if args.mock or os.name != "posix" or is_root_process():
+        return
+    if shutil.which("sudo") is None:
+        print(f"{APP_NAME} needs sudo for powermetrics, but sudo was not found.", file=sys.stderr)
+        sys.exit(1)
+    print(f"{APP_NAME} keeps the UI unprivileged and asks sudo only for powermetrics.")
+    proc = subprocess.run(["sudo", "-v"], check=False)
+    if proc.returncode != 0:
+        sys.exit(proc.returncode)
+
+
 def apply_hid_temperatures(sample: MetricSample) -> None:
     avg_temp, max_temp = HID_TEMPS.read()
     sample.soc_temp_c = first_non_none(sample.soc_temp_c, avg_temp)
@@ -1463,26 +1655,24 @@ class PowerMetricsStream:
         self.interval_ms = interval_ms
         self.proc: subprocess.Popen[bytes] | None = None
         self.stop_event = threading.Event()
+        self.stderr_chunks: deque[str] = deque(maxlen=8)
+        self.stderr_thread: threading.Thread | None = None
 
     def command(self) -> list[str]:
-        return [
-            "powermetrics",
-            "--samplers",
-            POWER_SAMPLERS,
-            "--sample-rate",
-            str(self.interval_ms),
-            "--sample-count",
-            "-1",
-            "--format",
-            "plist",
-            "--buffer-size",
-            "1",
-            "--poweravg",
-            "1",
-            "--show-plimits",
-            "--show-extra-power-info",
-            "--handle-invalid-values",
-        ]
+        return powermetrics_command(self.interval_ms, "-1")
+
+    def drain_stderr(self) -> None:
+        if self.proc is None or self.proc.stderr is None:
+            return
+        try:
+            for chunk in iter(lambda: self.proc.stderr.readline(), b""):
+                text = chunk.decode("utf-8", "ignore").strip()
+                if text:
+                    self.stderr_chunks.append(text)
+                if self.stop_event.is_set():
+                    break
+        except Exception:
+            return
 
     def samples(self) -> Iterable[MetricSample]:
         self.proc = subprocess.Popen(
@@ -1491,6 +1681,8 @@ class PowerMetricsStream:
             stderr=subprocess.PIPE,
             bufsize=0,
         )
+        self.stderr_thread = threading.Thread(target=self.drain_stderr, daemon=True)
+        self.stderr_thread.start()
         assert self.proc.stdout is not None
         buffer = b""
         while not self.stop_event.is_set():
@@ -1513,14 +1705,8 @@ class PowerMetricsStream:
                         yield sample
                 except Exception as exc:
                     yield MetricSample(warning=f"plist parse failed: {exc}")
-        stderr = b""
-        if self.proc.stderr is not None:
-            try:
-                stderr = self.proc.stderr.read(2000)
-            except Exception:
-                stderr = b""
-        if stderr:
-            yield MetricSample(warning=stderr.decode("utf-8", "ignore").strip())
+        if self.stderr_chunks:
+            yield MetricSample(warning="\n".join(self.stderr_chunks))
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -1530,6 +1716,8 @@ class PowerMetricsStream:
                 self.proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        if self.stderr_thread and self.stderr_thread.is_alive():
+            self.stderr_thread.join(timeout=0.2)
 
 
 class MockStream:
@@ -2541,6 +2729,7 @@ def draw_process_section(
         safe_addstr(win, detail_y, x + 2, "─" * max(1, w - 4), colors["dim"])
         detail = (
             f"PID {selected.pid}"
+            + (f"  user {selected.user}" if selected.user else "")
             + (f"  PPID {selected.ppid}" if selected.ppid is not None else "")
             + (f"  time {selected.etime}" if selected.etime else "")
             + f"  CPU {selected.cpu_pct:.1f}%  RAM {selected.mem_pct:.1f}%"
@@ -2833,6 +3022,7 @@ def draw_help_overlay(win: curses.window, colors: dict[str, int]) -> None:
         ("Up/Down", "process select", "move process cursor"),
         ("Left/Right", "process sort", "cycle CPU/RAM/PID/name"),
         ("k, k", "process TERM", "second press confirms kill"),
+        ("menu", "Root kill", "disabled by default when running as root"),
         ("r", "reset peaks", "clear power history and peaks"),
     ]
     key_w = max(len("Key"), max(len(row[0]) for row in rows))
@@ -2898,6 +3088,8 @@ def menu_value_text(
         return process_panel
     if item_id == "process_sort":
         return process_sort
+    if item_id == "allow_root_kill":
+        return "on" if bool(getattr(args, "allow_root_kill", False)) else "off"
     if item_id == "alert_temp":
         return f"{float(args.alert_temp_c):.1f} C"
     if item_id == "alert_swap":
@@ -3259,18 +3451,16 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     colors = init_colors(args.theme)
     history = History(args.history)
     sample_queue: queue.Queue[MetricSample] = queue.Queue()
+    side_queue: queue.Queue[SideMetricsUpdate] = queue.Queue()
+    side_stop = threading.Event()
     stream: MockStream | PowerMetricsStream
     worker: threading.Thread
     latest: MetricSample | None = None
     freq_cache: dict[str, float] = {}
-    memory_stats = read_memory_stats()
-    battery_stats = read_battery_stats()
-    processes = read_processes()
-    previous_io = read_io_snapshot()
+    memory_stats = MemoryStats()
+    battery_stats = BatteryStats()
+    processes: list[ProcessInfo] = []
     io_stats = IoStats()
-    last_memory_update = time.monotonic()
-    last_io_update = time.monotonic()
-    last_process_update = time.monotonic()
     upper_power_mode = args.upper_power_mode if args.upper_power_mode in POWER_MODES else "soc"
     lower_power_mode = args.lower_power_mode if args.lower_power_mode in POWER_MODES else "cpu"
     upper_io_mode = args.upper_io_mode if args.upper_io_mode in IO_MODES else "disk_read"
@@ -3279,15 +3469,15 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     process_panel = args.process_panel if args.process_panel in PROCESS_PANEL_MODES else "hidden"
     process_sort = args.process_sort if args.process_sort in PROCESS_SORTS else "cpu"
     process_selected = 0
-    pending_kill_pid: int | None = None
-    pending_kill_until = 0.0
+    pending_kill: PendingKill | None = None
     help_visible = False
     menu_visible = False
     menu_selected = 0
     status = "starting sampler"
     stream_generation = 0
 
-    def save_ui_settings() -> None:
+    def save_ui_settings() -> bool:
+        nonlocal status
         args.process_panel = process_panel
         args.process_sort = process_sort
         args.upper_power_mode = upper_power_mode
@@ -3295,7 +3485,11 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         args.upper_io_mode = upper_io_mode
         args.lower_io_mode = lower_io_mode
         args.load_view = load_view
-        save_settings(args)
+        error = save_settings(args)
+        if error:
+            status = f"settings not saved: {error}"
+            return False
+        return True
 
     def apply_menu_change(delta: int) -> None:
         nonlocal upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view
@@ -3330,6 +3524,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             process_panel = cycle_value(PROCESS_PANEL_MODES, process_panel, step)
         elif item_id == "process_sort":
             process_sort = cycle_value(PROCESS_SORTS, process_sort, step)
+        elif item_id == "allow_root_kill":
+            args.allow_root_kill = not bool(getattr(args, "allow_root_kill", False))
         elif item_id == "alert_temp":
             args.alert_temp_c = round(clamp(float(args.alert_temp_c) + step * 1.0, 40.0, 125.0), 1)
         elif item_id == "alert_swap":
@@ -3365,6 +3561,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         stream, worker = start_stream()
 
     stream, worker = start_stream()
+    side_worker = threading.Thread(target=side_metrics_worker, args=(side_queue, side_stop), daemon=True)
+    side_worker.start()
     themes = list(THEMES)
     layouts = list(LAYOUTS)
 
@@ -3381,22 +3579,21 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                     status = f"last sample {age}"
                 except queue.Empty:
                     break
-
-            now = time.monotonic()
-            if now - last_memory_update >= max(MIN_INTERVAL, args.interval):
-                memory_stats = read_memory_stats()
-                battery_stats = read_battery_stats()
-                last_memory_update = now
-            if args.show_io and now - last_io_update >= max(MIN_INTERVAL, args.interval):
-                current_io = read_io_snapshot()
-                io_stats = io_stats_from_snapshots(previous_io, current_io)
-                previous_io = current_io
-                history.add_io(io_stats)
-                last_io_update = now
-            if process_panel != "hidden" and now - last_process_update >= max(MIN_INTERVAL, args.interval):
-                processes = read_processes()
-                process_selected = min(process_selected, max(0, len(processes) - 1))
-                last_process_update = now
+            while True:
+                try:
+                    update = side_queue.get_nowait()
+                    if update.memory is not None:
+                        memory_stats = update.memory
+                    if update.battery is not None:
+                        battery_stats = update.battery
+                    if update.io_stats is not None:
+                        io_stats = update.io_stats
+                        history.add_io(io_stats)
+                    if update.processes is not None:
+                        processes = update.processes
+                        process_selected = min(process_selected, max(0, len(processes) - 1))
+                except queue.Empty:
+                    break
 
             draw_dashboard(
                 stdscr,
@@ -3417,7 +3614,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 process_panel,
                 process_sort,
                 process_selected,
-                pending_kill_pid,
+                pending_kill.pid if pending_kill else None,
                 help_visible,
                 menu_visible,
                 menu_selected,
@@ -3439,13 +3636,13 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 elif key in (curses.KEY_RIGHT, curses.KEY_ENTER, 10, 13, ord(" ")):
                     apply_menu_change(1)
                 elif key in (ord("s"), ord("S")):
-                    save_ui_settings()
-                    status = "settings saved"
+                    if save_ui_settings():
+                        status = "settings saved"
                 elif key in (ord("m"), ord("M")):
                     menu_visible = False
                 continue
-            if pending_kill_pid is not None and time.monotonic() > pending_kill_until:
-                pending_kill_pid = None
+            if pending_kill is not None and time.monotonic() > pending_kill.until:
+                pending_kill = None
             if key in (ord("+"), ord("=")):
                 args.interval = round(max(MIN_INTERVAL, args.interval - interval_step(args.interval)), 1)
                 status = f"interval {interval_text(args.interval)} applied"
@@ -3477,7 +3674,6 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             elif key in (ord("d"), ord("D")):
                 args.show_io = not args.show_io
                 status = "disk/net shown" if args.show_io else "disk/net hidden"
-                previous_io = read_io_snapshot()
                 io_stats = IoStats()
                 save_ui_settings()
             elif key in (ord("l"), ord("L")):
@@ -3496,23 +3692,23 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             elif key == curses.KEY_UP:
                 if process_panel != "hidden":
                     process_selected = max(0, process_selected - 1)
-                    pending_kill_pid = None
+                    pending_kill = None
             elif key == curses.KEY_DOWN:
                 if process_panel != "hidden":
                     process_selected = min(max(0, len(processes) - 1), process_selected + 1)
-                    pending_kill_pid = None
+                    pending_kill = None
             elif key == curses.KEY_LEFT:
                 if process_panel != "hidden":
                     process_sort = cycle_value(PROCESS_SORTS, process_sort, -1)
                     process_selected = 0
-                    pending_kill_pid = None
+                    pending_kill = None
                     status = f"process sort {process_sort}"
                     save_ui_settings()
             elif key == curses.KEY_RIGHT:
                 if process_panel != "hidden":
                     process_sort = cycle_value(PROCESS_SORTS, process_sort, 1)
                     process_selected = 0
-                    pending_kill_pid = None
+                    pending_kill = None
                     status = f"process sort {process_sort}"
                     save_ui_settings()
             elif key in (ord("k"), ord("K")):
@@ -3521,7 +3717,21 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                     if 0 <= process_selected < len(ordered):
                         target = ordered[process_selected]
                         now = time.monotonic()
-                        if pending_kill_pid == target.pid and now <= pending_kill_until:
+                        root_kill_blocked = is_root_process() and not bool(getattr(args, "allow_root_kill", False))
+                        if root_kill_blocked:
+                            status = "root process kill disabled in settings"
+                            pending_kill = None
+                        elif pending_kill is not None and pending_kill.pid == target.pid and now <= pending_kill.until:
+                            fresh = next((process for process in read_processes() if process.pid == target.pid), None)
+                            if fresh is None:
+                                status = f"process {target.pid} already exited"
+                                pending_kill = None
+                                continue
+                            if not pending_kill.matches(fresh):
+                                status = f"process {target.pid} changed; kill cancelled"
+                                pending_kill = None
+                                processes = read_processes()
+                                continue
                             try:
                                 os.kill(target.pid, signal.SIGTERM)
                                 status = f"sent TERM to {target.pid} {target.command}"
@@ -3531,10 +3741,9 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                                 status = f"process {target.pid} already exited"
                             except Exception as exc:
                                 status = f"kill failed: {exc}"
-                            pending_kill_pid = None
+                            pending_kill = None
                         else:
-                            pending_kill_pid = target.pid
-                            pending_kill_until = now + KILL_CONFIRM_SECONDS
+                            pending_kill = PendingKill.from_process(target, now + KILL_CONFIRM_SECONDS)
                             status = f"press k again to TERM {target.pid} {target.command}"
             elif key == ord("s"):
                 lower_power_mode = "soc"
@@ -3562,10 +3771,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 save_ui_settings()
             elif key in (ord("p"), ord("P")):
                 process_panel = cycle_value(PROCESS_PANEL_MODES, process_panel, 1)
-                if process_panel != "hidden" and not processes:
-                    processes = read_processes()
                 process_selected = min(process_selected, max(0, len(processes) - 1))
-                pending_kill_pid = None
+                pending_kill = None
                 status = f"process panel {process_panel}"
                 save_ui_settings()
             elif key == ord("n"):
@@ -3578,47 +3785,19 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 save_ui_settings()
     finally:
         save_ui_settings()
+        side_stop.set()
         stream.stop()
-
-
-def ensure_root_or_reexec(args: argparse.Namespace) -> None:
-    if args.mock or os.name != "posix":
-        return
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return
-    sudo = shutil.which("sudo")
-    if not sudo:
-        print(f"{APP_NAME} needs root privileges for powermetrics, but sudo was not found.", file=sys.stderr)
-        sys.exit(1)
-    print(f"{APP_NAME} needs sudo because powermetrics only exposes these sensors as root.")
-    os.execvp(sudo, [sudo, sys.executable, *sys.argv])
+        side_worker.join(timeout=0.5)
 
 
 def run_probe(args: argparse.Namespace) -> int:
-    ensure_root_or_reexec(args)
+    ensure_powermetrics_access(args)
     if args.mock:
         sample = next(MockStream(int(args.interval * 1000)).samples())
         print_sample(sample)
         return 0
 
-    cmd = [
-        "powermetrics",
-        "--samplers",
-        POWER_SAMPLERS,
-        "--sample-rate",
-        str(int(args.interval * 1000)),
-        "--sample-count",
-        "1",
-        "--format",
-        "plist",
-        "--buffer-size",
-        "1",
-        "--poweravg",
-        "1",
-        "--show-plimits",
-        "--show-extra-power-info",
-        "--handle-invalid-values",
-    ]
+    cmd = powermetrics_command(int(args.interval * 1000), "1")
     proc = subprocess.run(cmd, check=False, capture_output=True)
     if proc.returncode != 0:
         print(proc.stderr.decode("utf-8", "ignore") or proc.stdout.decode("utf-8", "ignore"), file=sys.stderr)
@@ -3672,6 +3851,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layout", choices=LAYOUTS, default=settings.get("layout", "full"), help="dashboard layout preset")
     parser.add_argument("--show-io", action="store_true", default=settings.get("show_io", False), help="show compact disk/network panel")
     parser.add_argument("--mock", action="store_true", help="run with generated demo data")
+    parser.add_argument("--remove-settings", action="store_true", help="remove the saved user settings file and exit")
     parser.set_defaults(
         upper_power_mode=settings.get("upper_power_mode", "soc"),
         lower_power_mode=settings.get("lower_power_mode", "cpu"),
@@ -3680,6 +3860,7 @@ def build_parser() -> argparse.ArgumentParser:
         load_view=settings.get("load_view", "rows"),
         process_panel=settings.get("process_panel", "hidden"),
         process_sort=settings.get("process_sort", "cpu"),
+        allow_root_kill=settings.get("allow_root_kill", False),
         alert_temp_c=settings.get("alert_temp_c", HIGH_TEMP_C),
         alert_swap_gib=settings.get("alert_swap_gib", DEFAULT_ALERT_SWAP_GIB),
         alert_battery_drain_w=settings.get("alert_battery_drain_w", DEFAULT_ALERT_BATTERY_DRAIN_W),
@@ -3697,10 +3878,18 @@ def main(argv: list[str] | None = None) -> int:
     args.interval = round(clamp(args.interval, MIN_INTERVAL, MAX_INTERVAL), 1)
     args.history = int(clamp(args.history, 20, 1000))
 
+    if args.remove_settings:
+        error = remove_settings()
+        if error:
+            print(f"Could not remove settings at {SETTINGS_PATH}: {error}", file=sys.stderr)
+            return 1
+        print(f"Removed settings at {SETTINGS_PATH}")
+        return 0
+
     if args.command == "probe":
         return run_probe(args)
 
-    ensure_root_or_reexec(args)
+    ensure_powermetrics_access(args)
     curses.wrapper(run_curses, args)
     return 0
 
