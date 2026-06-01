@@ -32,13 +32,14 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Asmond"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 POWER_SAMPLERS = "cpu_power,gpu_power,ane_power,thermal,battery"
 ANE_MAX_POWER_MW = 8000.0
 IOHID_TEMP_TYPE = 15
 IOHID_TEMP_FIELD = IOHID_TEMP_TYPE << 16
 POWER_MODES = ("soc", "cpu", "gpu", "ane")
-LAYOUTS = ("full", "compact", "power-only", "thermals-only")
+LAYOUTS = ("full", "compact", "focus")
+LEGACY_LAYOUTS = {"power-only": "focus", "thermals-only": "focus"}
 LOAD_VIEWS = ("rows", "graph")
 PROCESS_PANEL_MODES = ("hidden", "left", "right")
 PROCESS_SORTS = ("cpu", "ram", "pid", "name")
@@ -239,8 +240,10 @@ def load_settings() -> dict[str, Any]:
     if isinstance(interval, int | float):
         settings["interval"] = float(clamp(float(interval), MIN_INTERVAL, MAX_INTERVAL))
     layout = data.get("layout")
-    if isinstance(layout, str) and layout in LAYOUTS:
-        settings["layout"] = layout
+    if isinstance(layout, str):
+        layout = normalize_layout(layout)
+        if layout in LAYOUTS:
+            settings["layout"] = layout
     show_io = data.get("show_io")
     if isinstance(show_io, bool):
         settings["show_io"] = show_io
@@ -288,11 +291,23 @@ def setting_choice(args: argparse.Namespace, name: str, default: str, choices: t
     return value if isinstance(value, str) and value in choices else default
 
 
+def normalize_layout(value: str) -> str:
+    return LEGACY_LAYOUTS.get(value, value)
+
+
+def layout_arg(value: str) -> str:
+    layout = normalize_layout(value)
+    if layout not in LAYOUTS:
+        raise argparse.ArgumentTypeError(f"choose one of: {', '.join(LAYOUTS)}")
+    return layout
+
+
 def save_settings(args: argparse.Namespace) -> str | None:
+    layout = normalize_layout(args.layout) if isinstance(args.layout, str) else "full"
     data = {
         "theme": args.theme if args.theme in THEMES else "classic",
         "interval": round(float(args.interval), 2),
-        "layout": args.layout if args.layout in LAYOUTS else "full",
+        "layout": layout if layout in LAYOUTS else "full",
         "show_io": bool(args.show_io),
         "upper_power_mode": setting_choice(args, "upper_power_mode", "soc", POWER_MODES),
         "lower_power_mode": setting_choice(args, "lower_power_mode", "cpu", POWER_MODES),
@@ -1252,6 +1267,12 @@ def pdo_list_from_port(port: dict[str, Any]) -> list[int]:
     return pdos
 
 
+def charge_port_label(index: int, total: int) -> str:
+    if total >= 3 and index == total - 1:
+        return "MagSafe"
+    return f"USB-C {index + 1}"
+
+
 def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
     telemetry = battery.get("PowerTelemetryData")
     telemetry = telemetry if isinstance(telemetry, dict) else {}
@@ -1279,10 +1300,12 @@ def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
             adapter_name = value.strip()
             break
 
-    best_index = int(dict_number(battery, "BestAdapterIndex") or 0)
+    best_index_value = dict_number(battery, "BestAdapterIndex")
+    best_index = int(best_index_value) if best_index_value is not None else None
     external_connected = bool(battery.get("ExternalConnected")) if "ExternalConnected" in battery else None
     charging = bool(battery.get("IsCharging")) if "IsCharging" in battery else None
     active_index: int | None = None
+    fallback_index: int | None = None
     ports: list[UsbCPortStats] = []
     for index, raw_port in enumerate(port_infos):
         if not isinstance(raw_port, dict):
@@ -1300,7 +1323,9 @@ def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
         fed = fed_details[index] if index < len(fed_details) and isinstance(fed_details[index], dict) else {}
         fed_connected = bool(fed.get("FedExternalConnected")) if isinstance(fed, dict) and "FedExternalConnected" in fed else False
         connected = bool(rdo or fed_connected)
-        role = "sink" if external_connected and index == best_index else "source/data" if connected else "idle"
+        if fallback_index is None and best_index is not None and external_connected and index == best_index:
+            fallback_index = len(ports)
+        role = "sink" if external_connected and connected else "source/data" if connected else "idle"
         cable = "unknown"
         if current_a is not None:
             if current_a > 3.05:
@@ -1310,7 +1335,7 @@ def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
         elif connected:
             cable = "unknown active"
         port = UsbCPortStats(
-            label=f"USB-C {index + 1}",
+            label=charge_port_label(index, len(port_infos)),
             connected=connected,
             role=role,
             voltage_v=voltage_v,
@@ -1320,9 +1345,11 @@ def usb_c_stats_from_item(battery: dict[str, Any]) -> UsbCStats:
             pdo_labels=pdo_labels,
             cable=cable,
         )
-        if active_index is None and (external_connected and index == best_index or rdo):
+        if active_index is None and (rdo or fed_connected):
             active_index = len(ports)
         ports.append(port)
+    if active_index is None:
+        active_index = fallback_index
 
     return UsbCStats(
         ports=ports,
@@ -2395,6 +2422,55 @@ def draw_box(win: curses.window, y: int, x: int, h: int, w: int, title: str, att
     safe_addstr(win, y, x + 2, f" {title} ", attr)
 
 
+def draw_hotkey_text(
+    win: curses.window,
+    y: int,
+    x: int,
+    text: str,
+    hotkey: str,
+    base_attr: int,
+    hotkey_attr: int,
+) -> int:
+    idx = text.lower().find(hotkey.lower())
+    if idx < 0:
+        safe_addstr(win, y, x, text, base_attr)
+        return x + len(text)
+    safe_addstr(win, y, x, text[:idx], base_attr)
+    safe_addstr(win, y, x + idx, text[idx : idx + 1], hotkey_attr)
+    safe_addstr(win, y, x + idx + 1, text[idx + 1 :], base_attr)
+    return x + len(text)
+
+
+def draw_label_hotkey(
+    win: curses.window,
+    y: int,
+    x: int,
+    text: str,
+    hotkey: str,
+    colors: dict[str, int],
+    *,
+    selected: bool = False,
+) -> int:
+    base_attr = colors["warn"] | curses.A_BOLD if selected else colors["muted"]
+    key_attr = colors["warn"] | curses.A_BOLD
+    return draw_hotkey_text(win, y, x, text, hotkey, base_attr, key_attr)
+
+
+def draw_box_hotkey_title(
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    title: str,
+    attr: int,
+    colors: dict[str, int],
+    hotkey: str,
+) -> None:
+    draw_box(win, y, x, h, w, title, attr)
+    draw_hotkey_text(win, y, x + 3, title, hotkey, attr, colors["warn"] | curses.A_BOLD)
+
+
 def fill_rect(win: curses.window, y: int, x: int, h: int, w: int, attr: int = 0) -> None:
     for row in range(max(0, h)):
         safe_addstr(win, y + row, x, " " * max(0, w), attr)
@@ -2422,8 +2498,11 @@ def draw_app_name(win: curses.window, y: int, x: int, colors: dict[str, int]) ->
 def draw_header(win: curses.window, args: argparse.Namespace, colors: dict[str, int]) -> None:
     _, max_x = win.getmaxyx()
     x = draw_app_name(win, 0, 1, colors)
-    rest = f" {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  q quit  m menu  ? help"
-    safe_addstr(win, 0, x, rest[: max(0, max_x - x - 1)], colors["bold"])
+    prefix = f" {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  q quit  m menu  ? "
+    safe_addstr(win, 0, x, prefix[: max(0, max_x - x - 1)], colors["bold"])
+    x += len(prefix)
+    if x < max_x - 1:
+        draw_hotkey_text(win, 0, x, "help", "h", colors["bold"], colors["warn"] | curses.A_BOLD)
 
 
 def draw_hotkey_box(
@@ -2437,10 +2516,7 @@ def draw_hotkey_box(
     colors: dict[str, int],
     hotkey: str,
 ) -> None:
-    draw_box(win, y, x, h, w, title, attr)
-    idx = title.lower().find(hotkey.lower())
-    if idx >= 0:
-        safe_addstr(win, y, x + 3 + idx, title[idx], colors["warn"] | curses.A_BOLD)
+    draw_box_hotkey_title(win, y, x, h, w, title, attr, colors, hotkey)
 
 
 def draw_bar(win: curses.window, y: int, x: int, w: int, value: float | None, attr: int) -> None:
@@ -2581,38 +2657,28 @@ def draw_power_mode_legend(
     lower_mode: str,
     colors: dict[str, int],
 ) -> None:
-    parts = [
-        ("upper ", None, None),
-        ("[S]", "upper", "soc"),
-        ("oC ", "upper", "soc"),
-        ("[C]", "upper", "cpu"),
-        ("PU ", "upper", "cpu"),
-        ("[G]", "upper", "gpu"),
-        ("PU ", "upper", "gpu"),
-        ("[A]", "upper", "ane"),
-        ("NE ", "upper", "ane"),
-        ("u cycle  /  lower ", None, None),
-        ("s", "lower", "soc"),
-        ("/", None, None),
-        ("c", "lower", "cpu"),
-        ("/", None, None),
-        ("g", "lower", "gpu"),
-        ("/", None, None),
-        ("a", "lower", "ane"),
-        (" n cycle", None, None),
-    ]
-    total_width = sum(len(text) for text, _, _ in parts)
+    labels = (
+        ("SoC", "soc", "S", "s", "soc"),
+        ("CPU", "cpu", "C", "c", "cpu"),
+        ("GPU", "gpu", "G", "g", "gpu"),
+        ("ANE", "ane", "A", "a", "ane"),
+    )
+    total_width = len("upper ") + sum(len(label) + 1 for label, _, _, _, _ in labels) + len("u cycle  /  lower ")
+    total_width += sum(len(label) + 1 for _, label, _, _, _ in labels) + len("n cycle")
     x = max(1, center_x - total_width // 2)
-    for text, side, mode in parts:
-        attr = colors["fg"]
-        if side == "upper" and mode == upper_mode:
-            attr = colors["good"] | curses.A_BOLD
-        elif side == "lower" and mode == lower_mode:
-            attr = colors["accent"] | curses.A_BOLD
-        elif side:
-            attr = colors["warn"] | curses.A_BOLD
-        safe_addstr(win, y, x, text, attr)
-        x += len(text)
+    safe_addstr(win, y, x, "upper ", colors["fg"])
+    x += len("upper ")
+    for upper_label, _, upper_key, _, mode in labels:
+        x = draw_label_hotkey(win, y, x, upper_label, upper_key, colors, selected=mode == upper_mode)
+        safe_addstr(win, y, x, " ", colors["fg"])
+        x += 1
+    safe_addstr(win, y, x, "u cycle  /  lower ", colors["fg"])
+    x += len("u cycle  /  lower ")
+    for _, lower_label, _, lower_key, mode in labels:
+        x = draw_label_hotkey(win, y, x, lower_label, lower_key, colors, selected=mode == lower_mode)
+        safe_addstr(win, y, x, " ", colors["fg"])
+        x += 1
+    safe_addstr(win, y, x, "n cycle", colors["fg"])
 
 
 def power_graph_attr(value: float | None, scale: float, colors: dict[str, int]) -> int:
@@ -3055,6 +3121,26 @@ def draw_power_section(
     draw_box(win, y, x, h, w, "POWER", colors["accent"])
     if h < 5 or w < 34:
         return
+    rows = [
+        ("SoC", "soc", effective_total_power_mw(sample)),
+        ("CPU", "cpu", sample.cpu_power_mw),
+        ("GPU", "gpu", sample.gpu_power_mw),
+        ("ANE", "ane", sample.ane_power_mw),
+    ]
+    if h < 8:
+        compact_cols = 2 if w >= 38 else 1
+        col_w = max(12, (w - 4) // compact_cols)
+        for idx, (name, _, current) in enumerate(rows[: max(0, (h - 2) * compact_cols)]):
+            row = idx // compact_cols
+            col = idx % compact_cols
+            yy = y + 1 + row
+            xx = x + 2 + col * col_w
+            safe_addstr(win, yy, xx, name, colors["muted"])
+            safe_addstr(win, yy, xx + 5, fmt_power(current)[: max(1, col_w - 6)], colors["fg"])
+        if h >= 7:
+            safe_addstr(win, y + h - 2, x + 2, "Battery", colors["muted"])
+            safe_addstr(win, y + h - 2, x + 10, fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw)), colors["fg"])
+        return
     avg_count = max(1, int(round(30.0 / max(interval_s, MIN_INTERVAL))))
     value_w = 9 if w >= 48 else 8
     avg_x = max(x + 18, x + w - value_w * 2 - 3)
@@ -3062,12 +3148,6 @@ def draw_power_section(
     if avg_x > x + 16 and max_x > avg_x:
         safe_addstr(win, y + 1, avg_x, "30s avg"[:value_w], colors["muted"])
         safe_addstr(win, y + 1, max_x, "peak"[:value_w], colors["muted"])
-    rows = [
-        ("SoC", "soc", effective_total_power_mw(sample)),
-        ("CPU", "cpu", sample.cpu_power_mw),
-        ("GPU", "gpu", sample.gpu_power_mw),
-        ("ANE", "ane", sample.ane_power_mw),
-    ]
     for idx, (name, mode, current) in enumerate(rows[: max(0, h - 4)]):
         yy = y + 2 + idx
         values = power_history_for_row(history, mode)
@@ -3192,8 +3272,7 @@ def draw_process_section(
     pending_kill_pid: int | None,
     colors: dict[str, int],
 ) -> None:
-    draw_box(win, y, x, h, w, "PROCESSES", colors["accent"])
-    safe_addstr(win, y, x + 12, "p", colors["warn"] | curses.A_BOLD)
+    draw_box_hotkey_title(win, y, x, h, w, "PROCESSES", colors["accent"], colors, "p")
     hint = f" sort {sort_key}  arrows move/sort  k kill "
     if w > len(hint) + 16:
         safe_addstr(win, y, x + w - len(hint) - 2, hint, colors["muted"])
@@ -3352,9 +3431,16 @@ def draw_io_mini_graph(
     scale = max(present, default=1.0)
     draw_io_columns(win, baseline, x, upper_h, upper_history, w, scale, colors, direction=-1)
     draw_io_columns(win, baseline, x, lower_h, lower_history, w, scale, colors, direction=1)
-    legend = f"i {upper_label} / o {lower_label}"
-    if len(legend) < w:
-        safe_addstr(win, baseline, x + max(0, w // 2 - len(legend) // 2), f" {legend} ", colors["fg"])
+    legend_width = len(f"I {upper_label} / O {lower_label}")
+    if legend_width + 2 < w:
+        xx = x + max(0, w // 2 - legend_width // 2)
+        safe_addstr(win, baseline, xx, " ", colors["fg"])
+        xx += 1
+        xx = draw_label_hotkey(win, baseline, xx, f"I {upper_label}", "i", colors)
+        safe_addstr(win, baseline, xx, " / ", colors["fg"])
+        xx += 3
+        xx = draw_label_hotkey(win, baseline, xx, f"O {lower_label}", "o", colors)
+        safe_addstr(win, baseline, xx, " ", colors["fg"])
 
 
 def alert_thresholds(args: argparse.Namespace | None = None) -> tuple[float, int, float]:
@@ -3403,10 +3489,12 @@ def draw_usage_matrix(
     lower_io_mode: str,
 ) -> None:
     draw_box(win, y, x, h, w, "CPU / GPU LOAD", colors["accent"])
-    safe_addstr(win, y, x + 13, "L", colors["warn"] | curses.A_BOLD)
     hint = "l avg rows" if load_view == "graph" else "l avg graph"
     if w > len(hint) + 8:
-        safe_addstr(win, y, x + w - len(hint) - 3, f" {hint} ", colors["muted"])
+        xx = x + w - len(hint) - 2
+        safe_addstr(win, y, xx - 1, " ", colors["muted"])
+        draw_label_hotkey(win, y, xx, hint, "l", colors)
+        safe_addstr(win, y, xx + len(hint), " ", colors["muted"])
     if h < 5 or w < 34:
         return
     cores = sample.cores
@@ -3511,11 +3599,11 @@ def draw_help_overlay(win: curses.window, colors: dict[str, int]) -> None:
     max_y, max_x = win.getmaxyx()
     rows = [
         ("q", "quit", f"close {APP_NAME}"),
-        ("?", "help", "toggle this overlay"),
+        ("? / h", "help", "toggle this overlay"),
         ("m", "menu", "edit settings"),
         ("t", "theme", "cycle color themes"),
         ("+ / -", "interval", "change sampler interval"),
-        ("v", "layout", "cycle full/compact/focused layouts"),
+        ("v", "layout", "cycle full/compact/focus layouts"),
         ("d", "disk/net", "show or hide I/O graph"),
         ("i / o", "I/O source", "cycle upper/lower disk-net graph"),
         ("S/C/G/A", "upper power", "select SoC/CPU/GPU/ANE"),
@@ -3776,15 +3864,15 @@ def draw_dashboard(
         safe_addstr(stdscr, 1, 1, status_text[: max_x - 2], status_attr)
 
     if args.layout == "compact":
-        graph_h = 7
-    elif args.layout in {"power-only", "thermals-only"}:
-        graph_h = max(9, min(14, max_y // 3))
+        graph_h = 6
+    elif args.layout == "focus":
+        graph_h = max(7, min(12, max_y // 4))
     else:
         graph_h = max(7, min(11, max_y // 5))
     draw_split_power_graph(stdscr, 2, 0, graph_h, max_x, history, sample, upper_power_mode, lower_power_mode, colors)
 
     info_y = graph_h + 2
-    top_h = 7 if args.layout == "compact" else 9
+    top_h = 6 if args.layout == "compact" else 8 if args.layout == "focus" else 9
     left_w = max_x // 2
     right_w = max_x - left_w
     draw_box(stdscr, info_y, left_w, top_h, right_w, "THERMALS", color_for_thermal(sample, colors))
@@ -3805,7 +3893,7 @@ def draw_dashboard(
         safe_addstr(stdscr, info_y + 6, left_w + 2, "Limit", colors["muted"])
         safe_addstr(stdscr, info_y + 6, left_w + 14, ", ".join(sample.throttle_reasons), colors["bad"])
 
-    if args.layout == "power-only":
+    if args.layout == "focus":
         battery_y = info_y + top_h
         battery_h = max_y - battery_y - 1
         if battery_h >= 5:
@@ -3815,7 +3903,7 @@ def draw_dashboard(
                 draw_hotkey_box(stdscr, battery_y, half, battery_h, max_x - half, "USB-C", colors["accent"], colors, "b")
                 draw_battery_section(stdscr, battery_y + 1, 2, battery_h - 2, half - 4, battery, colors)
                 draw_usb_c_section(stdscr, battery_y + 1, half + 2, battery_h - 2, max_x - half - 4, usb_c, colors)
-            elif battery_h >= 6:
+            elif battery_h >= 10:
                 upper_h = max(3, battery_h // 2)
                 lower_h = battery_h - upper_h
                 draw_hotkey_box(stdscr, battery_y, 0, upper_h, max_x, "BATTERY", colors["accent"], colors, "b")
@@ -3823,38 +3911,12 @@ def draw_dashboard(
                 draw_hotkey_box(stdscr, battery_y + upper_h, 0, lower_h, max_x, "USB-C", colors["accent"], colors, "b")
                 draw_usb_c_section(stdscr, battery_y + upper_h + 1, 2, lower_h - 2, max_x - 4, usb_c, colors)
             else:
-                draw_hotkey_box(stdscr, battery_y, 0, battery_h, max_x, "USB-C", colors["accent"], colors, "b")
-                draw_usb_c_section(stdscr, battery_y + 1, 2, battery_h - 2, max_x - 4, usb_c, colors)
-        if sample.warning:
-            safe_addstr(stdscr, max_y - 1, 1, sample.warning[: max_x - 2], colors["warn"])
-        draw_modal_overlays(
-            stdscr,
-            colors,
-            args,
-            help_visible,
-            menu_visible,
-            menu_selected,
-            upper_power_mode,
-            lower_power_mode,
-            upper_io_mode,
-            lower_io_mode,
-            load_view,
-            process_panel,
-            process_sort,
-            charge_panel,
-        )
-        stdscr.refresh()
-        return
-
-    if args.layout == "thermals-only":
-        detail_y = info_y + top_h
-        detail_h = max_y - detail_y - 1
-        if detail_h >= 5:
-            half = max_x // 2
-            draw_box(stdscr, detail_y, 0, detail_h, half, "BATTERY", colors["accent"])
-            draw_box(stdscr, detail_y, half, detail_h, max_x - half, "RAM", colors["accent"])
-            draw_battery_section(stdscr, detail_y + 1, 2, detail_h - 2, half - 4, battery, colors)
-            draw_memory_section(stdscr, detail_y + 1, half + 2, detail_h - 2, max_x - half - 4, memory, sample, colors)
+                if charge_panel == "usb":
+                    draw_hotkey_box(stdscr, battery_y, 0, battery_h, max_x, "USB-C", colors["accent"], colors, "b")
+                    draw_usb_c_section(stdscr, battery_y + 1, 2, battery_h - 2, max_x - 4, usb_c, colors)
+                else:
+                    draw_hotkey_box(stdscr, battery_y, 0, battery_h, max_x, "BATTERY", colors["accent"], colors, "b")
+                    draw_battery_section(stdscr, battery_y + 1, 2, battery_h - 2, max_x - 4, battery, colors)
         if sample.warning:
             safe_addstr(stdscr, max_y - 1, 1, sample.warning[: max_x - 2], colors["warn"])
         draw_modal_overlays(
@@ -3879,7 +3941,7 @@ def draw_dashboard(
     y2 = info_y + top_h
     remaining_h = max_y - y2 - 1
     bottom_left = max_x // 2
-    left_io_panel = args.layout == "full" and args.show_io
+    left_io_panel = args.layout in {"full", "compact"} and args.show_io
     process_left = args.layout == "full" and process_panel == "left"
     process_right = args.layout == "full" and process_panel == "right"
     if process_left:
@@ -3902,15 +3964,23 @@ def draw_dashboard(
         )
 
     right_w = max_x - bottom_left
-    show_battery_panel = args.layout == "full"
-    if remaining_h >= 16:
+    show_battery_panel = args.layout in {"full", "compact"}
+    if args.layout == "compact":
+        clocks_h = min(6, remaining_h)
+        battery_h = 6 if show_battery_panel and remaining_h - clocks_h >= 11 else 0
+        io_h = 0
+    elif remaining_h >= 16:
         clocks_h = 8
+        battery_h = 8 if show_battery_panel and remaining_h - clocks_h >= 14 else 0
+        io_h = 7 if args.show_io and not left_io_panel and remaining_h - clocks_h - battery_h >= 12 else 0
     elif remaining_h >= 10:
         clocks_h = 5
+        battery_h = 0
+        io_h = 0
     else:
         clocks_h = remaining_h
-    battery_h = 8 if show_battery_panel and remaining_h - clocks_h >= 14 else 0
-    io_h = 7 if args.show_io and not left_io_panel and remaining_h - clocks_h - battery_h >= 12 else 0
+        battery_h = 0
+        io_h = 0
     ram_h = max(0, remaining_h - clocks_h - battery_h - io_h)
     draw_box(stdscr, y2, bottom_left, clocks_h, right_w, "CLOCKS", colors["accent"])
     right_rows = [
@@ -3946,6 +4016,11 @@ def draw_dashboard(
     if io_h >= 3:
         io_y = y2 + clocks_h + ram_h + battery_h
         draw_box(stdscr, io_y, bottom_left, io_h, right_w, "DISK / NET", colors["accent"])
+        if right_w > 20:
+            title_x = bottom_left + 13
+            safe_addstr(stdscr, io_y, title_x, "I", colors["warn"] | curses.A_BOLD)
+            safe_addstr(stdscr, io_y, title_x + 1, "/", colors["muted"])
+            safe_addstr(stdscr, io_y, title_x + 2, "O", colors["warn"] | curses.A_BOLD)
         draw_io_mini_graph(
             stdscr,
             io_y + 1,
@@ -3985,6 +4060,10 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     try:
         curses.curs_set(0)
     except curses.error:
+        pass
+    try:
+        curses.set_escdelay(25)
+    except (AttributeError, curses.error):
         pass
     stdscr.nodelay(True)
     stdscr.timeout(200)
@@ -4037,7 +4116,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         return True
 
     def io_poll_visible() -> bool:
-        return bool(args.show_io and args.layout not in {"power-only", "thermals-only"})
+        return bool(args.show_io and args.layout != "focus")
 
     def process_poll_visible() -> bool:
         return bool(args.layout == "full" and process_panel != "hidden")
@@ -4227,7 +4306,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 status = f"interval {interval_text(args.interval)} applied"
                 restart_stream()
                 save_ui_settings()
-            elif key == ord("?"):
+            elif key in (ord("?"), ord("h"), ord("H")):
                 help_visible = not help_visible
             elif key in (ord("m"), ord("M")):
                 menu_visible = not menu_visible
@@ -4438,13 +4517,23 @@ def print_sample(sample: MetricSample) -> None:
 def build_parser() -> argparse.ArgumentParser:
     settings = load_settings()
     parser = argparse.ArgumentParser(
-        description="macOS power, thermal and activity monitor for Apple Silicon.",
+        description=(
+            "Asmond monitors macOS power, thermal pressure, CPU/GPU load, memory, "
+            "battery, USB-C/MagSafe charging, disk/network I/O and processes from a compact terminal UI."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION}")
     parser.add_argument("-i", "--interval", type=float, default=settings.get("interval", 1.0), help="sample interval in seconds")
     parser.add_argument("--history", type=int, default=240, help="number of samples kept for graphs")
     parser.add_argument("-t", "--theme", choices=sorted(THEMES), default=settings.get("theme", "classic"), help="color theme")
-    parser.add_argument("--layout", choices=LAYOUTS, default=settings.get("layout", "full"), help="dashboard layout preset")
+    parser.add_argument(
+        "--layout",
+        type=layout_arg,
+        default=settings.get("layout", "full"),
+        metavar="{full,compact,focus}",
+        help="dashboard layout preset",
+    )
     parser.add_argument("--show-io", action="store_true", default=settings.get("show_io", False), help="show compact disk/network panel")
     parser.add_argument("--mock", action="store_true", help="run with generated demo data")
     parser.add_argument("--remove-settings", action="store_true", help="remove the saved user settings file and exit")
@@ -4475,6 +4564,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.interval = round(clamp(args.interval, MIN_INTERVAL, MAX_INTERVAL), 1)
     args.history = int(clamp(args.history, 20, 1000))
+    args.layout = normalize_layout(args.layout)
 
     if args.remove_settings:
         error = remove_settings()

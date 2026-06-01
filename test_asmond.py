@@ -170,6 +170,33 @@ class UsbCTests(unittest.TestCase):
         self.assertAlmostEqual(stats.active_port.current_a or 0.0, 1.5)
         self.assertAlmostEqual(stats.active_port.power_w or 0.0, 30.0)
 
+    def test_usb_c_stats_prefers_connected_port_over_best_adapter_index(self) -> None:
+        stats = asmond.usb_c_stats_from_item(
+            {
+                "ExternalConnected": True,
+                "BestAdapterIndex": 0,
+                "PortControllerInfo": [
+                    {"PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 0, "PortControllerPortPDO": []},
+                    {"PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 0, "PortControllerPortPDO": []},
+                    {
+                        "PortControllerActiveContractRdo": 0x10025896,
+                        "PortControllerNPDOs": 1,
+                        "PortControllerPortPDO": [0x0006412C],
+                    },
+                ],
+                "FedDetails": [
+                    {"FedExternalConnected": 0},
+                    {"FedExternalConnected": 0},
+                    {"FedExternalConnected": 1},
+                ],
+            }
+        )
+        self.assertIsNotNone(stats.active_port)
+        assert stats.active_port is not None
+        self.assertEqual(stats.active_port.label, "MagSafe")
+        self.assertEqual([port.label for port in stats.ports], ["USB-C 1", "USB-C 2", "MagSafe"])
+        self.assertEqual(stats.active_port.role, "sink")
+
 
 class AlertTests(unittest.TestCase):
     def test_alert_thresholds(self) -> None:
@@ -261,6 +288,36 @@ class SettingsTests(unittest.TestCase):
             asmond.menu_value_text("alert_swap", args, "soc", "cpu", "disk_read", "net_in", "rows", "hidden", "cpu", "battery"),
             "1.50 GiB",
         )
+
+    def test_legacy_layout_names_map_to_focus(self) -> None:
+        old_path = asmond.SETTINGS_PATH
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            asmond.SETTINGS_PATH = Path(tmp_dir) / "settings.json"
+            try:
+                asmond.SETTINGS_PATH.write_text('{"layout": "thermals-only"}', encoding="utf-8")
+                self.assertEqual(asmond.load_settings()["layout"], "focus")
+                args = argparse.Namespace(
+                    theme="classic",
+                    interval=1.0,
+                    layout="power-only",
+                    show_io=False,
+                    upper_power_mode="soc",
+                    lower_power_mode="cpu",
+                    upper_io_mode="disk_read",
+                    lower_io_mode="net_in",
+                    load_view="rows",
+                    process_panel="hidden",
+                    process_sort="cpu",
+                    charge_panel="battery",
+                    allow_root_kill=False,
+                    alert_temp_c=85.0,
+                    alert_swap_gib=1.0,
+                    alert_battery_drain_w=15.0,
+                )
+                asmond.save_settings(args)
+                self.assertEqual(asmond.load_settings()["layout"], "focus")
+            finally:
+                asmond.SETTINGS_PATH = old_path
 
     def test_default_settings_path_uses_application_support(self) -> None:
         old_env = os.environ.get(asmond.SETTINGS_DIR_ENV)

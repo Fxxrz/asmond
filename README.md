@@ -15,10 +15,10 @@ It reads Apple's `powermetrics` plist stream and combines it with macOS system c
 - RAM, swap and memory pressure using `vm_stat`, `vm.swapusage` and `memory_pressure`
 - Legacy memory bandwidth counters in the RAM panel when `powermetrics` exposes `bandwidth_counters`
 - Battery details: charge, state, health, capacity, cycle count, power and time remaining
-- USB-C charge details from IOKit: active port, negotiated voltage/current/power and PD profiles when exposed
+- USB-C/MagSafe charge details from IOKit: active port, negotiated voltage/current/power and PD profiles when exposed
 - Optional compact disk/network I/O graph with selectable read/write sources
 - Optional process panel with CPU/RAM sorting, selection and confirmed TERM action
-- Layout presets: `full`, `compact`, `power-only`, `thermals-only`
+- Layout presets: `full`, `compact`, `focus`
 - Alerts for throttling, high temperature, swap usage and battery drain
 - Theme-colored ASCII logo on the waiting screen, help overlay and settings menu
 - Local persistence for theme, interval, layout, graph sources, process panel and alert thresholds
@@ -91,12 +91,12 @@ python3 -m unittest -v
 
 ```text
 q       quit
-?       toggle help overlay
+? / h   toggle help overlay
 m       toggle settings menu
 t       cycle theme
 +/-     change and apply sample interval, down to 0.1s
 r       reset power graph history and peaks
-v       cycle layout preset
+v       cycle layout preset: full, compact, focus
 d       show or hide Disk/Network I/O panel
 i       cycle the upper Disk/Network graph source
 o       cycle the lower Disk/Network graph source
@@ -113,6 +113,8 @@ k       mark selected process, press k again to send TERM
 ```
 
 In the settings menu, use Up/Down or Tab to move, Left/Right or Enter to change a value, `s` to save and Esc to close.
+
+The `focus` layout is the combined power/thermal view. Older saved settings named `power-only` or `thermals-only` are mapped to `focus` automatically.
 
 Process termination uses the current user's permissions. The full TUI refuses root launches by default; use normal `asmond` so only `powermetrics` receives elevated privileges. Root UI mode exists only as an explicit override with `--allow-root-ui`, and root process termination remains disabled unless enabled in the settings menu.
 
@@ -151,7 +153,7 @@ Asmond prefers exposed macOS counters over estimates. Some values are not public
 
 Memory bandwidth support is a legacy, best-effort path. Older macOS/Apple Silicon combinations exposed `bandwidth_counters` in the `powermetrics` plist stream, but this appears to be unavailable on current macOS releases and is not covered by the maintainer's current hardware tests. When the counters are present, values are grouped by visible names such as CPU, GPU, ANE, DRAM or DCS and displayed as GB/s; otherwise the bandwidth rows stay hidden.
 
-USB-C charge information is decoded from the AppleSmartBattery IOKit tree. Negotiated voltage, current, wattage and source PDOs are shown when macOS exposes them. Cable capability is intentionally conservative: Asmond reports `unknown` unless the controller data is strong enough to infer a 3A/5A power path.
+USB-C and MagSafe charge information is decoded from the AppleSmartBattery IOKit tree. Negotiated voltage, current, wattage and source PDOs are shown when macOS exposes them. Cable capability is intentionally conservative: Asmond reports `unknown` unless the controller data is strong enough to infer a 3A/5A power path.
 
 RAM labels are macOS-specific: `Used` is active plus wired memory, while `Phys` is physical occupancy (`total - free/speculative`). `Pressure` uses Apple's `memory_pressure` command when available and otherwise falls back to a reclaimable-memory estimate.
 
