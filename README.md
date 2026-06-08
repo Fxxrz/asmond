@@ -18,10 +18,10 @@ It reads Apple's `powermetrics` plist stream and combines it with macOS system c
 - USB-C/MagSafe charge details from IOKit: active port, negotiated voltage/current/power and PD profiles when exposed
 - Optional compact disk/network I/O graph with selectable read/write sources
 - Optional process panel with PID, CPU%, RAM%, RSS, and GPU% when macOS exposes a usable counter
-- Layout presets: `full`, `compact`, `focus`
+- Layout presets: `full`, `compact`, `focus`, plus an editable `custom` layout
 - Alerts for throttling, high temperature, swap usage and battery drain
 - Theme-colored ASCII logo on the waiting screen, help overlay and settings menu
-- Local persistence for theme, interval, layout, graph sources, process panel and alert thresholds
+- Local persistence for theme, interval, layout, custom slots, graph sources, process panel and alert thresholds
 - `doctor` and anonymized `report` commands for troubleshooting
 
 ## Requirements
@@ -121,9 +121,10 @@ q       quit
 ? / h   toggle help overlay
 m       toggle settings menu
 t       cycle theme
+T       tailor mode for numbered custom-layout slots
 +/-     change and apply sample interval, down to 0.1s
 r       reset power graph history and peaks
-v       cycle layout preset: full, compact, focus
+v       cycle layout preset: full, compact, focus, custom
 d       show or hide Disk/Network I/O panel
 i       cycle the upper Disk/Network graph source
 o       cycle the lower Disk/Network graph source
@@ -140,6 +141,8 @@ k       mark selected process, press k again to send TERM
 ```
 
 In the settings menu, use Up/Down or Tab to move, Left/Right or Enter to change a value, `s` to save and Esc to close.
+
+When the `custom` layout is active, press `T` to enter Tailor mode. The editable slots are numbered directly on the dashboard. Press a number to open the small slot editor away from that panel, then use Up/Down, Left/Right and Enter to change the slot, panel, detail level or custom layout name. Panels without meaningful detail variants keep a single fixed detail value. `T` or Esc closes Tailor mode.
 
 The `focus` layout is the combined power/thermal view. Older saved settings named `power-only` or `thermals-only` are mapped to `focus` automatically.
 

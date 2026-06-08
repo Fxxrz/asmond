@@ -33,18 +33,45 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Asmond"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 POWER_SAMPLERS = "cpu_power,gpu_power,ane_power,thermal,battery"
 ANE_MAX_POWER_MW = 8000.0
 IOHID_TEMP_TYPE = 15
 IOHID_TEMP_FIELD = IOHID_TEMP_TYPE << 16
 POWER_MODES = ("soc", "cpu", "gpu", "ane")
-LAYOUTS = ("full", "compact", "focus")
+POWER_FALLBACK_EXCLUDES = (
+    "limit",
+    "cap",
+    "state",
+    "mode",
+    "level",
+    "index",
+    "count",
+    "ratio",
+    "residency",
+    "idle",
+    "active",
+)
+LAYOUTS = ("full", "compact", "focus", "custom")
 LEGACY_LAYOUTS = {"power-only": "focus", "thermals-only": "focus"}
+DETAIL_LEVELS = ("compact", "normal", "detail")
 LOAD_VIEWS = ("rows", "graph")
 PROCESS_PANEL_MODES = ("hidden", "left", "right")
 PROCESS_SORTS = ("cpu", "gpu", "ram", "pid", "name")
 CHARGE_PANEL_MODES = ("battery", "usb")
+CUSTOM_PANEL_IDS = ("power", "thermals", "load", "clocks", "ram", "charge", "io", "process")
+CUSTOM_SLOT_IDS = ("upper_left", "upper_right", "lower_left", "right_top", "right_middle", "right_lower", "right_bottom")
+CUSTOM_SLOT_LABELS = {
+    "upper_left": "upper left",
+    "upper_right": "upper right",
+    "lower_left": "lower left",
+    "right_top": "right top",
+    "right_middle": "right middle",
+    "right_lower": "right lower",
+    "right_bottom": "right bottom",
+}
+TAILOR_MENU_ITEMS = ("panel", "detail", "name")
+RESERVED_CUSTOM_NAMES = frozenset((*LAYOUTS, *LEGACY_LAYOUTS))
 IO_MODES = ("disk_read", "disk_write", "net_in", "net_out")
 IO_MODE_LABELS = {
     "disk_read": "disk read",
@@ -62,9 +89,9 @@ MENU_ITEMS = (
     ("upper_io", "Upper I/O", "Top Disk/Net graph source"),
     ("lower_io", "Lower I/O", "Bottom Disk/Net graph source"),
     ("load_view", "Load view", "CPU/GPU avg rows or graph"),
-    ("process_panel", "Processes", "Full layout process panel"),
+    ("process_panel", "Processes", "Built-in full layout process panel"),
     ("process_sort", "Proc sort", "Process sort key"),
-    ("charge_panel", "Charge panel", "Full layout battery or USB-C panel"),
+    ("charge_panel", "Charge panel", "Battery or USB-C panel"),
     ("allow_root_kill", "Root kill", "Allow process kill when running as root"),
     ("alert_temp", "Temp alert", "High temperature threshold"),
     ("alert_swap", "Swap alert", "Swap-used threshold"),
@@ -287,12 +314,114 @@ def load_settings() -> dict[str, Any]:
     alert_battery_drain_w = data.get("alert_battery_drain_w")
     if isinstance(alert_battery_drain_w, int | float):
         settings["alert_battery_drain_w"] = float(clamp(float(alert_battery_drain_w), 0.0, 250.0))
+    custom_slot = data.get("custom_slot")
+    if isinstance(custom_slot, str) and custom_slot in CUSTOM_SLOT_IDS:
+        settings["custom_slot"] = custom_slot
+    custom_layout = sanitize_custom_layout(data.get("custom_layout"))
+    if custom_layout:
+        settings["custom_layout"] = custom_layout
+    custom_name = clean_custom_name(data.get("custom_name"))
+    if custom_name and custom_name_error(custom_name) is None:
+        settings["custom_name"] = custom_name
     return settings
 
 
 def setting_choice(args: argparse.Namespace, name: str, default: str, choices: tuple[str, ...]) -> str:
     value = getattr(args, name, default)
     return value if isinstance(value, str) and value in choices else default
+
+
+def default_panel_for_slot(slot_id: str) -> str:
+    template = LAYOUT_TEMPLATES.get("custom")
+    if template is not None:
+        for slot in template.slots:
+            if slot.slot_id == slot_id:
+                return slot.default_panel_id
+    return "ram"
+
+
+def default_detail_for_panel(panel_id: str) -> str:
+    spec = PANEL_SPECS.get(panel_id)
+    return spec.default_detail if spec is not None else "normal"
+
+
+def detail_levels_for_panel(panel_id: str) -> tuple[str, ...]:
+    spec = PANEL_SPECS.get(panel_id)
+    if spec is None:
+        return ("normal",)
+    return spec.detail_levels or (spec.default_detail,)
+
+
+def clean_custom_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = re.sub(r"\s+", " ", value.strip())
+    return cleaned[:32]
+
+
+def custom_name_error(value: str) -> str | None:
+    name = clean_custom_name(value)
+    if not name:
+        return "name is empty"
+    if name.casefold() in {reserved.casefold() for reserved in RESERVED_CUSTOM_NAMES}:
+        return "name is reserved"
+    return None
+
+
+def custom_layout_label(args: argparse.Namespace) -> str:
+    layout = normalize_layout(getattr(args, "layout", "full"))
+    if layout != "custom":
+        return layout
+    name = clean_custom_name(getattr(args, "custom_name", ""))
+    return f"custom:{name}" if name else "custom"
+
+
+def sanitize_custom_layout(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, dict[str, str]] = {}
+    for slot_id, raw_config in value.items():
+        if slot_id not in CUSTOM_SLOT_IDS or not isinstance(raw_config, dict):
+            continue
+        panel_id = raw_config.get("panel")
+        detail = raw_config.get("detail")
+        if panel_id not in CUSTOM_PANEL_IDS:
+            continue
+        if detail not in detail_levels_for_panel(panel_id):
+            detail = default_detail_for_panel(panel_id)
+        cleaned[slot_id] = {"panel": panel_id, "detail": detail}
+    return cleaned
+
+
+def custom_slot_config(custom_layout: dict[str, dict[str, str]], slot_id: str) -> dict[str, str]:
+    config = sanitize_custom_layout(custom_layout).get(slot_id, {})
+    panel_id = config.get("panel", default_panel_for_slot(slot_id))
+    detail = config.get("detail", default_detail_for_panel(panel_id))
+    return {"panel": panel_id, "detail": detail}
+
+
+def custom_layout_effective_has_panel(custom_layout: dict[str, dict[str, str]], panel_id: str) -> bool:
+    cleaned = sanitize_custom_layout(custom_layout)
+    for slot_id in CUSTOM_SLOT_IDS:
+        if slot_id == "right_bottom" and slot_id not in cleaned:
+            continue
+        if custom_slot_config(cleaned, slot_id)["panel"] == panel_id:
+            return True
+    return False
+
+
+def layout_uses_io(args: argparse.Namespace) -> bool:
+    layout = normalize_layout(getattr(args, "layout", "full"))
+    if layout == "custom":
+        return bool(getattr(args, "show_io", False) or custom_layout_effective_has_panel(getattr(args, "custom_layout", {}), "io"))
+    return bool(getattr(args, "show_io", False) and layout != "focus")
+
+
+def layout_uses_process(args: argparse.Namespace, process_panel: str) -> bool:
+    layout = normalize_layout(getattr(args, "layout", "full"))
+    if layout == "custom":
+        return custom_layout_effective_has_panel(getattr(args, "custom_layout", {}), "process")
+    return bool(layout == "full" and process_panel != "hidden")
 
 
 def normalize_layout(value: str) -> str:
@@ -308,6 +437,9 @@ def layout_arg(value: str) -> str:
 
 def save_settings(args: argparse.Namespace) -> str | None:
     layout = normalize_layout(args.layout) if isinstance(args.layout, str) else "full"
+    custom_name = clean_custom_name(getattr(args, "custom_name", ""))
+    if custom_name_error(custom_name) is not None:
+        custom_name = ""
     data = {
         "theme": args.theme if args.theme in THEMES else "classic",
         "interval": round(float(args.interval), 2),
@@ -325,6 +457,11 @@ def save_settings(args: argparse.Namespace) -> str | None:
         "alert_temp_c": round(float(getattr(args, "alert_temp_c", HIGH_TEMP_C)), 1),
         "alert_swap_gib": round(float(getattr(args, "alert_swap_gib", DEFAULT_ALERT_SWAP_GIB)), 2),
         "alert_battery_drain_w": round(float(getattr(args, "alert_battery_drain_w", DEFAULT_ALERT_BATTERY_DRAIN_W)), 1),
+        "custom_slot": getattr(args, "custom_slot", CUSTOM_SLOT_IDS[0])
+        if getattr(args, "custom_slot", CUSTOM_SLOT_IDS[0]) in CUSTOM_SLOT_IDS
+        else CUSTOM_SLOT_IDS[0],
+        "custom_layout": sanitize_custom_layout(getattr(args, "custom_layout", {})),
+        "custom_name": custom_name,
     }
     tmp_path = SETTINGS_PATH.with_suffix(f"{SETTINGS_PATH.suffix}.tmp")
     try:
@@ -560,6 +697,136 @@ class ProcessGpuProbeState:
 
 
 PROCESS_GPU_PROBE_STATE = ProcessGpuProbeState()
+
+
+@dataclass(frozen=True)
+class Rect:
+    y: int
+    x: int
+    h: int
+    w: int
+
+
+@dataclass(frozen=True)
+class PanelSpec:
+    panel_id: str
+    title: str
+    min_w: int
+    min_h: int
+    preferred_shape: str
+    default_detail: str = "normal"
+    detail_levels: tuple[str, ...] = DETAIL_LEVELS
+
+
+@dataclass(frozen=True)
+class LayoutSlot:
+    slot_id: str
+    default_panel_id: str
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class LayoutTemplate:
+    name: str
+    description: str
+    slots: tuple[LayoutSlot, ...]
+
+
+PANEL_SPECS: dict[str, PanelSpec] = {
+    "power_graph": PanelSpec("power_graph", "Power Graph", 72, 7, "wide", "detail", ("detail",)),
+    "power": PanelSpec("power", "Power", 30, 5, "normal", "normal", ("compact", "normal")),
+    "thermals": PanelSpec("thermals", "Thermals", 30, 5, "normal", "normal", ("normal",)),
+    "load": PanelSpec("load", "CPU / GPU Load", 48, 8, "wide", "detail", ("detail",)),
+    "clocks": PanelSpec("clocks", "Clocks", 30, 5, "normal", "normal", ("normal",)),
+    "ram": PanelSpec("ram", "RAM", 38, 7, "tall", "detail", ("compact", "detail")),
+    "charge": PanelSpec("charge", "Battery / USB-C", 30, 6, "normal", "normal", DETAIL_LEVELS),
+    "io": PanelSpec("io", "Disk / Net", 38, 5, "wide", "normal", ("normal",)),
+    "process": PanelSpec("process", "Processes", 48, 8, "tall", "detail", ("detail",)),
+}
+
+
+LAYOUT_TEMPLATES: dict[str, LayoutTemplate] = {
+    "full": LayoutTemplate(
+        "full",
+        "wide graph plus two-column dashboard",
+        (
+            LayoutSlot("top", "power_graph"),
+            LayoutSlot("upper_left", "power"),
+            LayoutSlot("upper_right", "thermals"),
+            LayoutSlot("lower_left", "load"),
+            LayoutSlot("right_top", "clocks"),
+            LayoutSlot("right_middle", "ram"),
+            LayoutSlot("right_lower", "charge", optional=True),
+            LayoutSlot("right_bottom", "io", optional=True),
+        ),
+    ),
+    "compact": LayoutTemplate(
+        "compact",
+        "same information with shorter panels",
+        (
+            LayoutSlot("top", "power_graph"),
+            LayoutSlot("upper_left", "power"),
+            LayoutSlot("upper_right", "thermals"),
+            LayoutSlot("lower_left", "load"),
+            LayoutSlot("right_top", "clocks"),
+            LayoutSlot("right_middle", "ram"),
+            LayoutSlot("right_lower", "charge", optional=True),
+        ),
+    ),
+    "focus": LayoutTemplate(
+        "focus",
+        "power, thermals and charging focus",
+        (
+            LayoutSlot("top", "power_graph"),
+            LayoutSlot("upper_left", "power"),
+            LayoutSlot("upper_right", "thermals"),
+            LayoutSlot("main", "charge"),
+        ),
+    ),
+    "custom": LayoutTemplate(
+        "custom",
+        "editable full-grid dashboard",
+        (
+            LayoutSlot("top", "power_graph"),
+            LayoutSlot("upper_left", "power"),
+            LayoutSlot("upper_right", "thermals"),
+            LayoutSlot("lower_left", "load"),
+            LayoutSlot("right_top", "clocks"),
+            LayoutSlot("right_middle", "ram"),
+            LayoutSlot("right_lower", "charge", optional=True),
+            LayoutSlot("right_bottom", "io", optional=True),
+        ),
+    ),
+}
+
+
+@dataclass(frozen=True)
+class PanelPlacement:
+    panel_id: str
+    rect: Rect
+    detail: str
+    slot: str = ""
+
+
+@dataclass(frozen=True)
+class DashboardLayout:
+    left_io_panel: bool = False
+    panels: tuple[PanelPlacement, ...] = ()
+
+    def panel(self, panel_id: str, slot: str = "") -> PanelPlacement | None:
+        for placement in self.panels:
+            if placement.panel_id != panel_id:
+                continue
+            if slot and placement.slot != slot:
+                continue
+            return placement
+        return None
+
+    def slot(self, slot: str) -> PanelPlacement | None:
+        for placement in self.panels:
+            if placement.slot == slot:
+                return placement
+        return None
 
 
 @dataclass
@@ -886,6 +1153,10 @@ def first_non_none(*values: float | None) -> float | None:
     return None
 
 
+def any_present(*values: Any) -> bool:
+    return any(value is not None for value in values)
+
+
 def energy_counter_to_mw(value: Any, interval_s: float) -> float | None:
     number, _ = parse_value(value)
     if number is None:
@@ -1031,34 +1302,34 @@ def sample_from_plist(obj: dict[str, Any], interval_s: float = 1.0) -> MetricSam
     sample.memory_bandwidth_gbps = bandwidth_counters_from_plist(obj)
 
     sample.cpu_power_mw = first_non_none(sample.cpu_power_mw, find_best(
-        flat, ("cpu", "power"), exclude=("limit", "cap", "battery"), converter=as_mw
+        flat, ("cpu", "power"), exclude=(*POWER_FALLBACK_EXCLUDES, "battery"), converter=as_mw
     ))
     sample.gpu_power_mw = first_non_none(sample.gpu_power_mw, find_best(
-        flat, ("gpu", "power"), exclude=("limit", "cap", "battery"), converter=as_mw
+        flat, ("gpu", "power"), exclude=(*POWER_FALLBACK_EXCLUDES, "battery"), converter=as_mw
     ))
     sample.ane_power_mw = first_non_none(sample.ane_power_mw, find_best(
         flat,
         ("power",),
         any_of=("ane", "neural"),
-        exclude=("limit", "cap", "battery"),
+        exclude=(*POWER_FALLBACK_EXCLUDES, "battery"),
         converter=as_mw,
     ))
     sample.media_power_mw = first_non_none(sample.media_power_mw, find_best(
         flat,
         ("power",),
         any_of=("media", "decoder", "encoder", "video"),
-        exclude=("limit", "cap", "battery"),
+        exclude=(*POWER_FALLBACK_EXCLUDES, "battery"),
         converter=as_mw,
     ))
     sample.soc_power_mw = first_non_none(sample.soc_power_mw, find_best(
         flat,
         ("power",),
         any_of=("soc", "processor", "package", "combined"),
-        exclude=("limit", "cap", "battery"),
+        exclude=(*POWER_FALLBACK_EXCLUDES, "battery"),
         converter=as_mw,
     ))
     sample.battery_power_mw = first_non_none(sample.battery_power_mw, find_best(
-        flat, ("battery", "power"), exclude=("limit", "cap", "accumulated"), converter=as_mw
+        flat, ("battery", "power"), exclude=(*POWER_FALLBACK_EXCLUDES, "accumulated"), converter=as_mw
     ))
 
     sample.p_usage_pct = first_non_none(sample.p_usage_pct, find_best(
@@ -1446,7 +1717,8 @@ def usb_c_stats_from_item(battery: dict[str, Any], hpm_items: list[dict[str, Any
             power_w = None
         if fallback_index is None and best_index is not None and external_connected and index == best_index:
             fallback_index = len(ports)
-        role = "sink" if external_connected and connected else "source/data" if connected else "idle"
+        input_connected = bool(external_connected) or bool(hpm_port and hpm_port.connected) or fed_connected or bool(rdo)
+        role = "sink" if input_connected and connected else "source/data" if connected else "idle"
         cable = "unknown"
         if current_a is not None:
             if current_a > 3.05:
@@ -1471,8 +1743,11 @@ def usb_c_stats_from_item(battery: dict[str, Any], hpm_items: list[dict[str, Any
         if rdo_active_index is None and rdo:
             rdo_active_index = len(ports)
         ports.append(port)
+    input_present = bool(external_connected) or hpm_active_index is not None or (
+        external_connected is not False and (fed_active_index is not None or rdo_active_index is not None)
+    )
     active_index = None
-    if external_connected:
+    if input_present:
         active_index = first_non_none(hpm_active_index, fed_active_index, rdo_active_index, fallback_index)
     elif has_hpm_ports:
         active_index = hpm_active_index
@@ -1485,11 +1760,11 @@ def usb_c_stats_from_item(battery: dict[str, Any], hpm_items: list[dict[str, Any
         system_voltage_v=system_voltage_mv / 1000.0 if system_voltage_mv and system_voltage_mv > 0 else None,
         system_current_a=system_current_ma / 1000.0 if system_current_ma and system_current_ma > 0 else None,
         system_power_w=system_power_mw / 1000.0 if system_power_mw and system_power_mw > 0 else None,
-        adapter_voltage_v=adapter_voltage_v if external_connected else None,
-        adapter_current_a=adapter_current_a if external_connected else None,
-        adapter_contract_power_w=adapter_contract_power_w if external_connected else None,
-        adapter_power_w=adapter_power_w if external_connected else None,
-        adapter_name=adapter_name if external_connected else "",
+        adapter_voltage_v=adapter_voltage_v if input_present else None,
+        adapter_current_a=adapter_current_a if input_present else None,
+        adapter_contract_power_w=adapter_contract_power_w if input_present else None,
+        adapter_power_w=adapter_power_w if input_present else None,
+        adapter_name=adapter_name if input_present else "",
     )
 
 
@@ -1527,13 +1802,6 @@ def read_charge_stats() -> tuple[BatteryStats, UsbCStats]:
     if battery is None:
         return BatteryStats(), UsbCStats()
     return battery_stats_from_item(battery), usb_c_stats_from_item(battery, read_hpm_port_items())
-
-
-def read_battery_power_mw() -> float | None:
-    battery = read_battery_items()
-    if battery is None:
-        return None
-    return battery_power_from_item(battery)
 
 
 def read_battery_stats() -> BatteryStats:
@@ -2753,6 +3021,50 @@ def power_history_for_row(history: History, mode: str) -> deque:
     return selected_power_history(history, mode)
 
 
+def power_row_supported(sample: MetricSample, history: History, mode: str) -> bool:
+    if selected_power_value(sample, mode) is not None:
+        return True
+    return any(value is not None for value in power_history_for_row(history, mode))
+
+
+def battery_supported(battery: BatteryStats) -> bool:
+    return any_present(
+        battery.power_mw,
+        battery.temperature_c,
+        battery.charge_pct,
+        battery.health_pct,
+        battery.cycle_count,
+        battery.time_remaining_min,
+        battery.charging,
+        battery.external_connected,
+        battery.design_capacity,
+        battery.max_capacity,
+        battery.raw_max_capacity,
+    )
+
+
+def usb_c_supported(usb_c: UsbCStats) -> bool:
+    return bool(usb_c.ports) or any_present(
+        usb_c.active_index,
+        usb_c.charging,
+        usb_c.system_voltage_v,
+        usb_c.system_current_a,
+        usb_c.system_power_w,
+        usb_c.adapter_voltage_v,
+        usb_c.adapter_current_a,
+        usb_c.adapter_contract_power_w,
+        usb_c.adapter_power_w,
+    ) or bool(usb_c.adapter_name)
+
+
+def effective_charge_panel(requested: str, battery: BatteryStats, usb_c: UsbCStats) -> str:
+    if requested == "battery" and not battery_supported(battery) and usb_c_supported(usb_c):
+        return "usb"
+    if requested == "usb" and not usb_c_supported(usb_c) and battery_supported(battery):
+        return "battery"
+    return requested if requested in CHARGE_PANEL_MODES else "battery"
+
+
 def keep_last_nonzero_frequencies(sample: MetricSample, cache: dict[str, float]) -> None:
     for attr in ("p_freq_mhz", "e_freq_mhz", "gpu_freq_mhz"):
         value = getattr(sample, attr)
@@ -2976,7 +3288,7 @@ def draw_app_name(win: curses.window, y: int, x: int, colors: dict[str, int]) ->
 def draw_header(win: curses.window, args: argparse.Namespace, colors: dict[str, int]) -> None:
     _, max_x = win.getmaxyx()
     x = draw_app_name(win, 0, 1, colors)
-    prefix = f" {VERSION}  {interval_text(args.interval)}  {args.theme}  {args.layout}  q quit  m menu  ? "
+    prefix = f" {VERSION}  {interval_text(args.interval)}  {args.theme}  {custom_layout_label(args)}  q quit  m menu  ? "
     safe_addstr(win, 0, x, prefix[: max(0, max_x - x - 1)], colors["bold"])
     x += len(prefix)
     if x < max_x - 1:
@@ -2995,16 +3307,6 @@ def draw_hotkey_box(
     hotkey: str,
 ) -> None:
     draw_box_hotkey_title(win, y, x, h, w, title, attr, colors, hotkey)
-
-
-def draw_bar(win: curses.window, y: int, x: int, w: int, value: float | None, attr: int) -> None:
-    if w <= 0:
-        return
-    if value is None:
-        safe_addstr(win, y, x, "." * w, attr)
-        return
-    filled = int(round(clamp(value, 0, 100) / 100.0 * w))
-    safe_addstr(win, y, x, "#" * filled + "-" * (w - filled), attr)
 
 
 def draw_usage_sparkline(
@@ -3051,51 +3353,6 @@ def draw_usage_sparkline(
         else:
             attr = colors["dim"]
         safe_addstr(win, y, x + idx, chr(0x2800 + mask), attr)
-
-
-def graph_points(values: Iterable[float | None], width: int, height: int, max_value: float | None) -> list[int | None]:
-    vals = list(values)[-width:]
-    if len(vals) < width:
-        vals = [None] * (width - len(vals)) + vals
-    present = [v for v in vals if v is not None]
-    if not present:
-        return [None] * width
-    scale = max_value or max(present) or 1.0
-    scale = max(scale, 1.0)
-    points: list[int | None] = []
-    for value in vals:
-        if value is None:
-            points.append(None)
-        else:
-            points.append(int(round(clamp(value, 0, scale) / scale * (height - 1))))
-    return points
-
-
-def draw_graph(
-    win: curses.window,
-    y: int,
-    x: int,
-    h: int,
-    w: int,
-    values: Iterable[float | None],
-    *,
-    max_value: float | None,
-    attr: int,
-) -> None:
-    if h <= 0 or w <= 0:
-        return
-    points = graph_points(values, w, h, max_value)
-    for row in range(h):
-        line = []
-        threshold = h - 1 - row
-        for point in points:
-            if point is None:
-                line.append(" ")
-            elif point >= threshold:
-                line.append("#")
-            else:
-                line.append(" ")
-        safe_addstr(win, y + row, x, "".join(line), attr)
 
 
 def tail_values(values: Iterable[float | None], width: int) -> list[float | None]:
@@ -3515,6 +3772,7 @@ def draw_memory_section(
     memory: MemoryStats,
     sample: MetricSample | None,
     colors: dict[str, int],
+    detail: str = "detail",
 ) -> None:
     if h < 7 or w < 30:
         return
@@ -3559,6 +3817,11 @@ def draw_memory_section(
         if memory.swap_total_bytes > 0
         else "0 B"
     )
+    if detail == "compact":
+        if h >= 5:
+            safe_addstr(win, y + h - 2, x, "Swap", colors["muted"])
+            safe_addstr(win, y + h - 2, x + 10, swap_text[: max(1, w - 11)], colors["fg"])
+        return
     rows: list[tuple[str, str, int, bool]] = [
         ("Phys", fmt_bytes(memory.physical_used_bytes), memory.physical_used_bytes, True),
         ("Free", fmt_bytes(memory.free_bytes), memory.free_bytes, True),
@@ -3595,17 +3858,22 @@ def draw_power_section(
     battery: BatteryStats,
     interval_s: float,
     colors: dict[str, int],
+    detail: str = "normal",
 ) -> None:
     draw_box(win, y, x, h, w, "POWER", colors["accent"])
     if h < 5 or w < 34:
         return
-    rows = [
+    candidate_rows = [
         ("SoC", "soc", effective_total_power_mw(sample)),
         ("CPU", "cpu", sample.cpu_power_mw),
         ("GPU", "gpu", sample.gpu_power_mw),
         ("ANE", "ane", sample.ane_power_mw),
     ]
-    if h < 8:
+    rows = [row for row in candidate_rows if power_row_supported(sample, history, row[1])]
+    if not rows:
+        safe_addstr(win, y + 1, x + 2, "no power telemetry", colors["muted"])
+        return
+    if detail == "compact" or h < 8:
         compact_cols = 2 if w >= 38 else 1
         col_w = max(12, (w - 4) // compact_cols)
         for idx, (name, _, current) in enumerate(rows[: max(0, (h - 2) * compact_cols)]):
@@ -3615,7 +3883,7 @@ def draw_power_section(
             xx = x + 2 + col * col_w
             safe_addstr(win, yy, xx, name, colors["muted"])
             safe_addstr(win, yy, xx + 5, fmt_power(current)[: max(1, col_w - 6)], colors["fg"])
-        if h >= 7:
+        if h >= 7 and battery_supported(battery):
             safe_addstr(win, y + h - 2, x + 2, "Battery", colors["muted"])
             safe_addstr(win, y + h - 2, x + 10, fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw)), colors["fg"])
         return
@@ -3636,7 +3904,7 @@ def draw_power_section(
         if max_x > avg_x:
             safe_addstr(win, yy, avg_x, f"{fmt_power(avg):>{value_w}}"[-value_w:], colors["fg"])
             safe_addstr(win, yy, max_x, f"{fmt_power(peak):>{value_w}}"[-value_w:], colors["warn"] if peak else colors["muted"])
-    extra_rows = [("Battery", fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw)))]
+    extra_rows = [("Battery", fmt_power(first_non_none(battery.power_mw, sample.battery_power_mw)))] if battery_supported(battery) else []
     start = y + 2 + min(len(rows), max(0, h - 4))
     for idx, (name, value) in enumerate(extra_rows[: max(0, y + h - 1 - start)]):
         yy = start + idx
@@ -3652,10 +3920,21 @@ def draw_battery_section(
     w: int,
     battery: BatteryStats,
     colors: dict[str, int],
+    detail: str = "normal",
 ) -> None:
     if h < 3 or w < 24:
         return
-    state = "charging" if battery.charging else "plugged" if battery.external_connected else "discharging"
+    if not battery_supported(battery):
+        safe_addstr(win, y, x, "no battery telemetry", colors["muted"])
+        return
+    if battery.charging is True:
+        state = "charging"
+    elif battery.external_connected is True:
+        state = "plugged"
+    elif battery.external_connected is False or battery.charging is False:
+        state = "discharging"
+    else:
+        state = "n/a"
     rows = [
         ("Charge", fmt_pct(battery.charge_pct).strip()),
         ("State", state),
@@ -3670,6 +3949,10 @@ def draw_battery_section(
             else "n/a",
         ),
     ]
+    if detail == "compact":
+        rows = rows[:3]
+    elif detail == "normal":
+        rows = rows[:6]
     for idx, (name, value) in enumerate(rows[:h]):
         safe_addstr(win, y + idx, x, name, colors["muted"])
         attr = colors["fg"]
@@ -3688,14 +3971,18 @@ def draw_usb_c_section(
     w: int,
     usb_c: UsbCStats,
     colors: dict[str, int],
+    detail: str = "normal",
 ) -> None:
     if h < 3 or w < 24:
+        return
+    if not usb_c_supported(usb_c):
+        safe_addstr(win, y, x, "no USB-C telemetry", colors["muted"])
         return
     active = usb_c.active_port
     state = "charging" if usb_c.charging else "plugged" if usb_c.external_connected else "no input"
     if active and active.connected and not usb_c.external_connected:
         state = "PD active"
-    input_active = bool(usb_c.external_connected and active and active.connected)
+    input_active = bool(active and active.connected and usb_c.external_connected is not False)
     voltage = first_non_none(usb_c.system_voltage_v, usb_c.adapter_voltage_v, active.voltage_v if active else None) if input_active else None
     current = first_non_none(usb_c.system_current_a, usb_c.adapter_current_a, active.current_a if active else None) if input_active else None
     contract_power = first_non_none(usb_c.system_power_w, usb_c.adapter_contract_power_w, active.power_w if active else None) if input_active else None
@@ -3714,6 +4001,10 @@ def draw_usb_c_section(
         rows.append(("PDOs", " | ".join(active.pdo_labels[:4]), colors["fg"]))
     elif usb_c.ports:
         rows.append(("Ports", str(len(usb_c.ports)), colors["fg"]))
+    if detail == "compact":
+        rows = rows[:4]
+    elif detail == "normal":
+        rows = rows[:7]
     for idx, (name, value, attr) in enumerate(rows[:h]):
         safe_addstr(win, y + idx, x, name, colors["muted"])
         safe_addstr(win, y + idx, x + min(12, max(8, w // 3)), value[: max(1, w - 14)], attr)
@@ -4097,16 +4388,16 @@ def source_status(
         sources.append("vm")
     else:
         missing.append("vm")
-    if battery.power_mw is not None or battery.temperature_c is not None or usb_c.ports:
+    if battery_supported(battery) or usb_c_supported(usb_c):
         sources.append("ioreg")
     else:
         missing.append("ioreg")
-    if args.show_io:
+    if layout_uses_io(args):
         if any(value is not None for value in (io_stats.disk_read_bps, io_stats.disk_write_bps, io_stats.net_in_bps, io_stats.net_out_bps)):
             sources.append("io")
         elif args.layout != "focus":
             missing.append("io")
-    if process_panel != "hidden":
+    if layout_uses_process(args, process_panel):
         if processes:
             sources.append("ps")
         else:
@@ -4126,8 +4417,9 @@ def draw_help_overlay(win: curses.window, colors: dict[str, int]) -> None:
         ("? / h", "help", "toggle this overlay"),
         ("m", "menu", "edit settings"),
         ("t", "theme", "cycle color themes"),
+        ("T", "tailor", "edit numbered custom slots"),
         ("+ / -", "interval", "change sampler interval"),
-        ("v", "layout", "cycle full/compact/focus layouts"),
+        ("v", "layout", "cycle full/compact/focus/custom layouts"),
         ("d", "disk/net", "show or hide I/O graph"),
         ("i / o", "I/O source", "cycle upper/lower disk-net graph"),
         ("S/C/G/A", "upper power", "select SoC/CPU/GPU/ANE"),
@@ -4284,6 +4576,96 @@ def draw_menu_overlay(
     safe_addstr(win, y + h - 1, x + max(2, w - len(footer) - 2), footer[: max(1, w - 4)], colors["muted"])
 
 
+def tailor_slot_number(slot_id: str) -> int | None:
+    try:
+        return CUSTOM_SLOT_IDS.index(slot_id) + 1
+    except ValueError:
+        return None
+
+
+def tailor_slot_for_key(key: int) -> str | None:
+    if ord("1") <= key <= ord(str(min(9, len(CUSTOM_SLOT_IDS)))):
+        index = key - ord("1")
+        if 0 <= index < len(CUSTOM_SLOT_IDS):
+            return CUSTOM_SLOT_IDS[index]
+    return None
+
+
+def tailor_menu_value_text(item_id: str, args: argparse.Namespace) -> str:
+    slot_id = getattr(args, "custom_slot", CUSTOM_SLOT_IDS[0])
+    config = custom_slot_config(getattr(args, "custom_layout", {}), slot_id)
+    if item_id == "panel":
+        return config["panel"]
+    if item_id == "detail":
+        return config["detail"]
+    if item_id == "name":
+        return clean_custom_name(getattr(args, "custom_name", "")) or "unnamed"
+    return ""
+
+
+def tailor_menu_rect(max_y: int, max_x: int, anchor: Rect | None) -> Rect:
+    h = min(max_y - 4, 8)
+    w = min(max_x - 4, 46)
+    if h < 6 or w < 30:
+        return Rect(1, 1, max(3, h), max(20, w))
+    if anchor is None:
+        return Rect(2, max(1, max_x - w - 2), h, w)
+    if anchor.x + anchor.w // 2 < max_x // 2:
+        x = max_x - w - 2
+    else:
+        x = 2
+    return Rect(2, x, h, w)
+
+
+def draw_tailor_overlay(
+    win: curses.window,
+    layout: DashboardLayout,
+    colors: dict[str, int],
+    args: argparse.Namespace,
+    menu_visible: bool,
+    menu_selected: int,
+    name_buffer: str,
+    name_editing: bool,
+) -> None:
+    for slot_id in CUSTOM_SLOT_IDS:
+        placement = layout.slot(slot_id)
+        number = tailor_slot_number(slot_id)
+        if placement is None or number is None:
+            continue
+        selected = slot_id == getattr(args, "custom_slot", CUSTOM_SLOT_IDS[0])
+        attr = (colors["warn"] if selected else colors["accent"]) | curses.A_BOLD
+        safe_addstr(win, placement.rect.y, placement.rect.x + 1, str(number), attr)
+    max_y, max_x = win.getmaxyx()
+    hint = "Tailor: 1-7 select slot  Enter edit  T/Esc close"
+    safe_addstr(win, max_y - 1, max(1, max_x - len(hint) - 2), hint[: max(1, max_x - 2)], colors["muted"])
+    if not menu_visible:
+        return
+    selected_slot = getattr(args, "custom_slot", CUSTOM_SLOT_IDS[0])
+    anchor = layout.slot(selected_slot).rect if layout.slot(selected_slot) is not None else None
+    rect = tailor_menu_rect(max_y, max_x, anchor)
+    fill_rect(win, rect.y, rect.x, rect.h, rect.w, colors["fg"])
+    draw_box(win, rect.y, rect.x, rect.h, rect.w, "TAILOR", colors["accent"])
+    rows = (
+        ("panel", "Custom panel"),
+        ("detail", "Custom detail"),
+        ("name", "Custom name"),
+    )
+    label_w = max(len(label) for _, label in rows)
+    for idx, (item_id, label) in enumerate(rows[: max(0, rect.h - 3)]):
+        yy = rect.y + 1 + idx
+        active = idx == menu_selected
+        attr = colors["warn"] | curses.A_BOLD if active else colors["fg"]
+        marker = ">" if active else " "
+        value = name_buffer if item_id == "name" and name_editing else tailor_menu_value_text(item_id, args)
+        if item_id == "name" and name_editing:
+            value = f"{value}_"
+        safe_addstr(win, yy, rect.x + 2, marker, colors["warn"] | curses.A_BOLD if active else colors["muted"])
+        safe_addstr(win, yy, rect.x + 4, f"{label:<{label_w}}"[:label_w], attr)
+        safe_addstr(win, yy, rect.x + 6 + label_w, value[: max(1, rect.x + rect.w - (rect.x + 8 + label_w))], attr)
+    footer = "Left/Right change  Enter edit name  Esc close"
+    safe_addstr(win, rect.y + rect.h - 1, rect.x + 2, footer[: max(1, rect.w - 4)], colors["muted"])
+
+
 def draw_modal_overlays(
     win: curses.window,
     colors: dict[str, int],
@@ -4319,6 +4701,368 @@ def draw_modal_overlays(
         )
 
 
+def power_graph_height(layout: str, max_y: int) -> int:
+    if layout == "compact":
+        return 6
+    if layout == "focus":
+        return max(7, min(12, max_y // 4))
+    return max(7, min(11, max_y // 5))
+
+
+def panel_detail(layout_name: str, panel_id: str, rect: Rect) -> str:
+    spec = PANEL_SPECS[panel_id]
+    if layout_name == "compact" and "compact" in spec.detail_levels:
+        return "compact"
+    if (rect.h <= spec.min_h or rect.w < spec.min_w) and "compact" in spec.detail_levels:
+        return "compact"
+    return spec.default_detail if spec.default_detail in spec.detail_levels else "normal"
+
+
+def panel_placement(layout_name: str, panel_id: str, rect: Rect, slot: str = "", detail: str | None = None) -> PanelPlacement:
+    selected_detail = detail if detail in detail_levels_for_panel(panel_id) else panel_detail(layout_name, panel_id, rect)
+    return PanelPlacement(panel_id, rect, selected_detail, slot)
+
+
+def layout_panel(layout: DashboardLayout, panel_id: str, slot: str = "") -> PanelPlacement | None:
+    return layout.panel(panel_id, slot)
+
+
+def panel_id_for_slot(slot: LayoutSlot, process_left: bool, process_right: bool) -> str:
+    if slot.slot_id == "lower_left" and process_left:
+        return "process"
+    if slot.slot_id == "right_middle" and process_right:
+        return "process"
+    return slot.default_panel_id
+
+
+def panel_placements_from_template(
+    layout_name: str,
+    template: LayoutTemplate,
+    rects: dict[str, Rect],
+    process_left: bool = False,
+    process_right: bool = False,
+    custom_layout: dict[str, dict[str, str]] | None = None,
+) -> tuple[PanelPlacement, ...]:
+    placements: list[PanelPlacement] = []
+    custom_layout = sanitize_custom_layout(custom_layout or {})
+    for slot in template.slots:
+        rect = rects.get(slot.slot_id)
+        if rect is None:
+            continue
+        detail = None
+        if layout_name == "custom" and slot.slot_id in CUSTOM_SLOT_IDS:
+            config = custom_slot_config(custom_layout, slot.slot_id)
+            panel_id = config["panel"]
+            detail = config["detail"]
+        else:
+            panel_id = panel_id_for_slot(slot, process_left, process_right)
+            if panel_id == "process" and slot.slot_id == "right_middle" and rect.h < 8:
+                panel_id = slot.default_panel_id
+        placements.append(panel_placement(layout_name, panel_id, rect, slot.slot_id, detail))
+    return tuple(placements)
+
+
+def dashboard_layout(
+    max_y: int,
+    max_x: int,
+    layout_name: str,
+    show_io: bool,
+    process_panel: str,
+    custom_layout: dict[str, dict[str, str]] | None = None,
+) -> DashboardLayout:
+    layout_name = normalize_layout(layout_name)
+    template = LAYOUT_TEMPLATES.get(layout_name, LAYOUT_TEMPLATES["full"])
+    custom_layout = sanitize_custom_layout(custom_layout or {})
+    graph_h = power_graph_height(layout_name, max_y)
+    graph = Rect(2, 0, graph_h, max_x)
+    info_y = graph_h + 2
+    top_h = 6 if layout_name == "compact" else 8 if layout_name == "focus" else 9
+    left_w = max_x // 2
+    right_w = max_x - left_w
+    power = Rect(info_y, 0, top_h, left_w)
+    thermals = Rect(info_y, left_w, top_h, right_w)
+    rects = {"top": graph, "upper_left": power, "upper_right": thermals}
+
+    if layout_name == "focus":
+        charge_y = info_y + top_h
+        focus_charge_area = Rect(charge_y, 0, max_y - charge_y - 1, max_x)
+        rects["main"] = focus_charge_area
+        return DashboardLayout(
+            panels=panel_placements_from_template(layout_name, template, rects),
+        )
+
+    y2 = info_y + top_h
+    remaining_h = max_y - y2 - 1
+    bottom_left = max_x // 2
+    right_w = max_x - bottom_left
+    left_io_panel = layout_name in {"full", "compact"} and show_io
+    process_left = layout_name == "full" and process_panel == "left"
+    process_right = layout_name == "full" and process_panel == "right"
+    custom_wants_right_lower = layout_name == "custom"
+    custom_wants_right_bottom = layout_name == "custom" and (show_io or "right_bottom" in custom_layout)
+
+    if layout_name == "compact":
+        clocks_h = min(6, remaining_h)
+        charge_h = 6 if remaining_h - clocks_h >= 11 else 0
+        io_h = 0
+    elif remaining_h >= 16:
+        clocks_h = 8
+        charge_h = 8 if (custom_wants_right_lower or remaining_h - clocks_h >= 14) and remaining_h - clocks_h >= 8 else 0
+        need_right_bottom = custom_wants_right_bottom or (show_io and not left_io_panel)
+        io_h = 7 if need_right_bottom and remaining_h - clocks_h - charge_h >= 12 else 0
+    elif remaining_h >= 10:
+        clocks_h = 5
+        charge_h = 0
+        io_h = 0
+    else:
+        clocks_h = remaining_h
+        charge_h = 0
+        io_h = 0
+
+    ram_h = max(0, remaining_h - clocks_h - charge_h - io_h)
+    ram_y = y2 + clocks_h
+    charge_y = ram_y + ram_h
+    io_y = charge_y + charge_h
+    usage = Rect(y2, 0, remaining_h, bottom_left)
+    clocks = Rect(y2, bottom_left, clocks_h, right_w)
+    ram = Rect(ram_y, bottom_left, ram_h, right_w)
+    charge = Rect(charge_y, bottom_left, charge_h, right_w) if charge_h else None
+    io = Rect(io_y, bottom_left, io_h, right_w) if io_h else None
+    rects["lower_left"] = usage
+    rects["right_top"] = clocks
+    if ram.h >= 3:
+        rects["right_middle"] = ram
+    if charge is not None:
+        rects["right_lower"] = charge
+    if io is not None:
+        rects["right_bottom"] = io
+    return DashboardLayout(
+        left_io_panel=left_io_panel,
+        panels=panel_placements_from_template(layout_name, template, rects, process_left, process_right, custom_layout),
+    )
+
+
+def draw_thermals_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    sample: MetricSample,
+    battery: BatteryStats,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    draw_box(win, rect.y, rect.x, rect.h, rect.w, "THERMALS", color_for_thermal(sample, colors))
+    throttle_text = "yes" if sample.throttled else "no" if sample.throttled is False else "unknown"
+    thermal_rows = [
+        ("Pressure", sample.thermal_pressure or "n/a"),
+        ("Throttled", throttle_text),
+        ("Temp avg", fmt_temp(sample.soc_temp_c)),
+        ("Temp max", fmt_temp(sample.temp_max_c)),
+        ("Batt temp", fmt_temp(battery.temperature_c)),
+    ]
+    for idx, (name, value) in enumerate(thermal_rows[: max(0, rect.h - 2)]):
+        safe_addstr(win, rect.y + 1 + idx, rect.x + 2, name, colors["muted"])
+        safe_addstr(win, rect.y + 1 + idx, rect.x + 14, value, color_for_thermal(sample, colors))
+    if sample.throttle_reasons:
+        safe_addstr(win, rect.y + 6, rect.x + 2, "Limit", colors["muted"])
+        safe_addstr(win, rect.y + 6, rect.x + 14, ", ".join(sample.throttle_reasons), colors["bad"])
+
+
+def draw_power_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    sample: MetricSample,
+    history: History,
+    battery: BatteryStats,
+    interval_s: float,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    draw_power_section(win, rect.y, rect.x, rect.h, rect.w, sample, history, battery, interval_s, colors, placement.detail)
+
+
+def draw_clocks_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    sample: MetricSample,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    draw_box(win, rect.y, rect.x, rect.h, rect.w, "CLOCKS", colors["accent"])
+    right_rows = [
+        ("P cores", fmt_freq(sample.p_freq_mhz)),
+        ("E cores", fmt_freq(sample.e_freq_mhz)),
+        ("GPU", fmt_freq(sample.gpu_freq_mhz)),
+        ("Temp avg", fmt_temp(sample.soc_temp_c)),
+        ("Temp max", fmt_temp(sample.temp_max_c)),
+        ("Raw keys", str(sample.raw_keys or "n/a")),
+    ]
+    max_freq_rows = min(len(right_rows), max(0, rect.h - 2))
+    for idx, (name, value) in enumerate(right_rows[:max_freq_rows]):
+        yy = rect.y + 1 + idx
+        safe_addstr(win, yy, rect.x + 2, name, colors["muted"])
+        safe_addstr(win, yy, rect.x + 13, value, colors["fg"])
+
+
+def draw_charge_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    charge_panel: str,
+    battery: BatteryStats,
+    usb_c: UsbCStats,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    effective_panel = effective_charge_panel(charge_panel, battery, usb_c)
+    if effective_panel == "usb":
+        draw_hotkey_box(win, rect.y, rect.x, rect.h, rect.w, "USB-C", colors["accent"], colors, "b")
+        draw_usb_c_section(win, rect.y + 1, rect.x + 2, rect.h - 2, rect.w - 4, usb_c, colors, placement.detail)
+    else:
+        draw_hotkey_box(win, rect.y, rect.x, rect.h, rect.w, "BATTERY", colors["accent"], colors, "b")
+        draw_battery_section(win, rect.y + 1, rect.x + 2, rect.h - 2, rect.w - 4, battery, colors, placement.detail)
+
+
+def draw_io_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    io_stats: IoStats,
+    history: History,
+    colors: dict[str, int],
+    upper_io_mode: str,
+    lower_io_mode: str,
+) -> None:
+    rect = placement.rect
+    draw_box(win, rect.y, rect.x, rect.h, rect.w, "DISK / NET", colors["accent"])
+    if rect.w > 20:
+        title_x = rect.x + 13
+        safe_addstr(win, rect.y, title_x, "I", colors["warn"] | curses.A_BOLD)
+        safe_addstr(win, rect.y, title_x + 1, "/", colors["muted"])
+        safe_addstr(win, rect.y, title_x + 2, "O", colors["warn"] | curses.A_BOLD)
+    draw_io_mini_graph(
+        win,
+        rect.y + 1,
+        rect.x + 2,
+        rect.h - 2,
+        rect.w - 4,
+        io_stats,
+        history,
+        colors,
+        upper_io_mode,
+        lower_io_mode,
+        heading=False,
+    )
+
+
+def draw_load_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    sample: MetricSample,
+    history: History,
+    colors: dict[str, int],
+    load_view: str,
+    left_io_panel: bool,
+    io_stats: IoStats,
+    upper_io_mode: str,
+    lower_io_mode: str,
+) -> None:
+    rect = placement.rect
+    draw_usage_matrix(
+        win,
+        rect.y,
+        rect.x,
+        rect.h,
+        rect.w,
+        sample,
+        history,
+        colors,
+        load_view,
+        left_io_panel,
+        io_stats,
+        upper_io_mode,
+        lower_io_mode,
+    )
+
+
+def draw_ram_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    memory: MemoryStats,
+    sample: MetricSample,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    draw_box(win, rect.y, rect.x, rect.h, rect.w, "RAM", colors["accent"])
+    draw_memory_section(win, rect.y + 1, rect.x + 2, rect.h - 2, rect.w - 4, memory, sample, colors, placement.detail)
+
+
+def draw_process_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    processes: list[ProcessInfo],
+    process_sort: str,
+    process_selected: int,
+    pending_kill_pid: int | None,
+    colors: dict[str, int],
+) -> None:
+    rect = placement.rect
+    draw_process_section(win, rect.y, rect.x, rect.h, rect.w, processes, process_sort, process_selected, pending_kill_pid, colors)
+
+
+def draw_dashboard_panel(
+    win: curses.window,
+    placement: PanelPlacement,
+    sample: MetricSample,
+    history: History,
+    memory: MemoryStats,
+    battery: BatteryStats,
+    usb_c: UsbCStats,
+    io_stats: IoStats,
+    processes: list[ProcessInfo],
+    colors: dict[str, int],
+    args: argparse.Namespace,
+    upper_power_mode: str,
+    lower_power_mode: str,
+    upper_io_mode: str,
+    lower_io_mode: str,
+    load_view: str,
+    process_sort: str,
+    charge_panel: str,
+    process_selected: int,
+    pending_kill_pid: int | None,
+    left_io_panel: bool,
+) -> None:
+    if placement.rect.h < 3 or placement.rect.w < 8:
+        return
+    if placement.panel_id == "power_graph":
+        draw_split_power_graph(
+            win,
+            placement.rect.y,
+            placement.rect.x,
+            placement.rect.h,
+            placement.rect.w,
+            history,
+            sample,
+            upper_power_mode,
+            lower_power_mode,
+            colors,
+        )
+    elif placement.panel_id == "power":
+        draw_power_panel(win, placement, sample, history, battery, args.interval, colors)
+    elif placement.panel_id == "thermals":
+        draw_thermals_panel(win, placement, sample, battery, colors)
+    elif placement.panel_id == "load":
+        draw_load_panel(win, placement, sample, history, colors, load_view, left_io_panel, io_stats, upper_io_mode, lower_io_mode)
+    elif placement.panel_id == "clocks":
+        draw_clocks_panel(win, placement, sample, colors)
+    elif placement.panel_id == "ram":
+        draw_ram_panel(win, placement, memory, sample, colors)
+    elif placement.panel_id == "charge":
+        draw_charge_panel(win, placement, charge_panel, battery, usb_c, colors)
+    elif placement.panel_id == "io":
+        draw_io_panel(win, placement, io_stats, history, colors, upper_io_mode, lower_io_mode)
+    elif placement.panel_id == "process":
+        draw_process_panel(win, placement, processes, process_sort, process_selected, pending_kill_pid, colors)
+
+
 def draw_dashboard(
     stdscr: curses.window,
     sample: MetricSample | None,
@@ -4344,6 +5088,11 @@ def draw_dashboard(
     help_visible: bool,
     menu_visible: bool,
     menu_selected: int,
+    tailor_visible: bool,
+    tailor_menu_visible: bool,
+    tailor_menu_selected: int,
+    tailor_name_buffer: str,
+    tailor_name_editing: bool,
 ) -> None:
     stdscr.erase()
     max_y, max_x = stdscr.getmaxyx()
@@ -4387,39 +5136,39 @@ def draw_dashboard(
     if status_text:
         safe_addstr(stdscr, 1, 1, status_text[: max_x - 2], status_attr)
 
-    if args.layout == "compact":
-        graph_h = 6
-    elif args.layout == "focus":
-        graph_h = max(7, min(12, max_y // 4))
-    else:
-        graph_h = max(7, min(11, max_y // 5))
-    draw_split_power_graph(stdscr, 2, 0, graph_h, max_x, history, sample, upper_power_mode, lower_power_mode, colors)
-
-    info_y = graph_h + 2
-    top_h = 6 if args.layout == "compact" else 8 if args.layout == "focus" else 9
-    left_w = max_x // 2
-    right_w = max_x - left_w
-    draw_box(stdscr, info_y, left_w, top_h, right_w, "THERMALS", color_for_thermal(sample, colors))
-    draw_power_section(stdscr, info_y, 0, top_h, left_w, sample, history, battery, args.interval, colors)
-
-    throttle_text = "yes" if sample.throttled else "no" if sample.throttled is False else "unknown"
-    thermal_rows = [
-        ("Pressure", sample.thermal_pressure or "n/a"),
-        ("Throttled", throttle_text),
-        ("Temp avg", fmt_temp(sample.soc_temp_c)),
-        ("Temp max", fmt_temp(sample.temp_max_c)),
-        ("Batt temp", fmt_temp(battery.temperature_c)),
-    ]
-    for idx, (name, value) in enumerate(thermal_rows[: max(0, top_h - 2)]):
-        safe_addstr(stdscr, info_y + 1 + idx, left_w + 2, name, colors["muted"])
-        safe_addstr(stdscr, info_y + 1 + idx, left_w + 14, value, color_for_thermal(sample, colors))
-    if sample.throttle_reasons:
-        safe_addstr(stdscr, info_y + 6, left_w + 2, "Limit", colors["muted"])
-        safe_addstr(stdscr, info_y + 6, left_w + 14, ", ".join(sample.throttle_reasons), colors["bad"])
+    layout = dashboard_layout(max_y, max_x, args.layout, args.show_io, process_panel, getattr(args, "custom_layout", {}))
+    for slot_id in ("top", "upper_left", "upper_right"):
+        placement = layout.slot(slot_id)
+        if placement is not None:
+            draw_dashboard_panel(
+                stdscr,
+                placement,
+                sample,
+                history,
+                memory,
+                battery,
+                usb_c,
+                io_stats,
+                processes,
+                colors,
+                args,
+                upper_power_mode,
+                lower_power_mode,
+                upper_io_mode,
+                lower_io_mode,
+                load_view,
+                process_sort,
+                charge_panel,
+                process_selected,
+                pending_kill_pid,
+                False,
+            )
 
     if args.layout == "focus":
-        battery_y = info_y + top_h
-        battery_h = max_y - battery_y - 1
+        focus_charge = layout.slot("main")
+        assert focus_charge is not None
+        battery_y = focus_charge.rect.y
+        battery_h = focus_charge.rect.h
         if battery_h >= 5:
             if max_x >= 100:
                 half = max_x // 2
@@ -4462,105 +5211,47 @@ def draw_dashboard(
         stdscr.refresh()
         return
 
-    y2 = info_y + top_h
-    remaining_h = max_y - y2 - 1
-    bottom_left = max_x // 2
-    left_io_panel = args.layout in {"full", "compact"} and args.show_io
-    process_left = args.layout == "full" and process_panel == "left"
-    process_right = args.layout == "full" and process_panel == "right"
-    if process_left:
-        draw_process_section(stdscr, y2, 0, remaining_h, bottom_left, processes, process_sort, process_selected, pending_kill_pid, colors)
-    else:
-        draw_usage_matrix(
+    for slot_id in ("lower_left", "right_top", "right_middle", "right_lower", "right_bottom"):
+        placement = layout.slot(slot_id)
+        if placement is None:
+            continue
+        draw_dashboard_panel(
             stdscr,
-            y2,
-            0,
-            remaining_h,
-            bottom_left,
+            placement,
             sample,
             history,
+            memory,
+            battery,
+            usb_c,
+            io_stats,
+            processes,
             colors,
+            args,
+            upper_power_mode,
+            lower_power_mode,
+            upper_io_mode,
+            lower_io_mode,
             load_view,
-            left_io_panel,
-            io_stats,
-            upper_io_mode,
-            lower_io_mode,
-        )
-
-    right_w = max_x - bottom_left
-    show_battery_panel = args.layout in {"full", "compact"}
-    if args.layout == "compact":
-        clocks_h = min(6, remaining_h)
-        battery_h = 6 if show_battery_panel and remaining_h - clocks_h >= 11 else 0
-        io_h = 0
-    elif remaining_h >= 16:
-        clocks_h = 8
-        battery_h = 8 if show_battery_panel and remaining_h - clocks_h >= 14 else 0
-        io_h = 7 if args.show_io and not left_io_panel and remaining_h - clocks_h - battery_h >= 12 else 0
-    elif remaining_h >= 10:
-        clocks_h = 5
-        battery_h = 0
-        io_h = 0
-    else:
-        clocks_h = remaining_h
-        battery_h = 0
-        io_h = 0
-    ram_h = max(0, remaining_h - clocks_h - battery_h - io_h)
-    draw_box(stdscr, y2, bottom_left, clocks_h, right_w, "CLOCKS", colors["accent"])
-    right_rows = [
-        ("P cores", fmt_freq(sample.p_freq_mhz)),
-        ("E cores", fmt_freq(sample.e_freq_mhz)),
-        ("GPU", fmt_freq(sample.gpu_freq_mhz)),
-        ("Temp avg", fmt_temp(sample.soc_temp_c)),
-        ("Temp max", fmt_temp(sample.temp_max_c)),
-        ("Raw keys", str(sample.raw_keys or "n/a")),
-    ]
-    max_freq_rows = min(len(right_rows), max(0, clocks_h - 2))
-    for idx, (name, value) in enumerate(right_rows[:max_freq_rows]):
-        yy = y2 + 1 + idx
-        safe_addstr(stdscr, yy, bottom_left + 2, name, colors["muted"])
-        safe_addstr(stdscr, yy, bottom_left + 13, value, colors["fg"])
-    if process_right and ram_h < 8:
-        process_right = False
-    if ram_h >= 3 and process_right:
-        ram_y = y2 + clocks_h
-        draw_process_section(stdscr, ram_y, bottom_left, ram_h, right_w, processes, process_sort, process_selected, pending_kill_pid, colors)
-    elif ram_h >= 3:
-        ram_y = y2 + clocks_h
-        draw_box(stdscr, ram_y, bottom_left, ram_h, right_w, "RAM", colors["accent"])
-        draw_memory_section(stdscr, ram_y + 1, bottom_left + 2, ram_h - 2, right_w - 4, memory, sample, colors)
-    if battery_h >= 3:
-        battery_y = y2 + clocks_h + ram_h
-        if charge_panel == "usb":
-            draw_hotkey_box(stdscr, battery_y, bottom_left, battery_h, right_w, "USB-C", colors["accent"], colors, "b")
-            draw_usb_c_section(stdscr, battery_y + 1, bottom_left + 2, battery_h - 2, right_w - 4, usb_c, colors)
-        else:
-            draw_hotkey_box(stdscr, battery_y, bottom_left, battery_h, right_w, "BATTERY", colors["accent"], colors, "b")
-            draw_battery_section(stdscr, battery_y + 1, bottom_left + 2, battery_h - 2, right_w - 4, battery, colors)
-    if io_h >= 3:
-        io_y = y2 + clocks_h + ram_h + battery_h
-        draw_box(stdscr, io_y, bottom_left, io_h, right_w, "DISK / NET", colors["accent"])
-        if right_w > 20:
-            title_x = bottom_left + 13
-            safe_addstr(stdscr, io_y, title_x, "I", colors["warn"] | curses.A_BOLD)
-            safe_addstr(stdscr, io_y, title_x + 1, "/", colors["muted"])
-            safe_addstr(stdscr, io_y, title_x + 2, "O", colors["warn"] | curses.A_BOLD)
-        draw_io_mini_graph(
-            stdscr,
-            io_y + 1,
-            bottom_left + 2,
-            io_h - 2,
-            right_w - 4,
-            io_stats,
-            history,
-            colors,
-            upper_io_mode,
-            lower_io_mode,
-            heading=False,
+            process_sort,
+            charge_panel,
+            process_selected,
+            pending_kill_pid,
+            layout.left_io_panel and placement.slot == "lower_left" and placement.panel_id == "load",
         )
 
     if sample.warning:
         safe_addstr(stdscr, max_y - 1, 1, sample.warning[: max_x - 2], colors["warn"])
+    if tailor_visible and args.layout == "custom":
+        draw_tailor_overlay(
+            stdscr,
+            layout,
+            colors,
+            args,
+            tailor_menu_visible,
+            tailor_menu_selected,
+            tailor_name_buffer,
+            tailor_name_editing,
+        )
     draw_modal_overlays(
         stdscr,
         colors,
@@ -4615,11 +5306,19 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     process_panel = args.process_panel if args.process_panel in PROCESS_PANEL_MODES else "hidden"
     process_sort = args.process_sort if args.process_sort in PROCESS_SORTS else "cpu"
     charge_panel = args.charge_panel if args.charge_panel in CHARGE_PANEL_MODES else "battery"
+    args.custom_slot = args.custom_slot if getattr(args, "custom_slot", None) in CUSTOM_SLOT_IDS else CUSTOM_SLOT_IDS[0]
+    args.custom_layout = sanitize_custom_layout(getattr(args, "custom_layout", {}))
+    args.custom_name = clean_custom_name(getattr(args, "custom_name", ""))
     process_selected = 0
     pending_kill: PendingKill | None = None
     help_visible = False
     menu_visible = False
     menu_selected = 0
+    tailor_visible = False
+    tailor_menu_visible = False
+    tailor_menu_selected = 0
+    tailor_name_editing = False
+    tailor_name_buffer = ""
     status = "starting sampler"
     stream_generation = 0
 
@@ -4640,13 +5339,46 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
         return True
 
     def io_poll_visible() -> bool:
-        return bool(args.show_io and args.layout != "focus")
+        return layout_uses_io(args)
 
     def process_poll_visible() -> bool:
-        return bool(args.layout == "full" and process_panel != "hidden")
+        return layout_uses_process(args, process_panel)
 
     def update_side_polling() -> None:
         side_poll_state.update(io_poll_visible(), process_poll_visible())
+
+    def set_custom_slot_config(panel_id: str | None = None, detail: str | None = None) -> None:
+        slot_id = args.custom_slot if args.custom_slot in CUSTOM_SLOT_IDS else CUSTOM_SLOT_IDS[0]
+        custom_layout = sanitize_custom_layout(getattr(args, "custom_layout", {}))
+        config = custom_slot_config(custom_layout, slot_id)
+        if panel_id is not None:
+            config["panel"] = panel_id
+            config["detail"] = default_detail_for_panel(panel_id)
+        if detail is not None:
+            config["detail"] = detail if detail in detail_levels_for_panel(config["panel"]) else default_detail_for_panel(config["panel"])
+        custom_layout[slot_id] = config
+        args.custom_layout = custom_layout
+        args.layout = "custom"
+
+    def apply_tailor_change(delta: int) -> None:
+        nonlocal io_stats, processes, tailor_menu_selected, status
+        item_id = TAILOR_MENU_ITEMS[tailor_menu_selected]
+        step = 1 if delta >= 0 else -1
+        if item_id == "slot":
+            args.custom_slot = cycle_value(CUSTOM_SLOT_IDS, args.custom_slot, step)
+        elif item_id == "panel":
+            current = custom_slot_config(args.custom_layout, args.custom_slot)["panel"]
+            set_custom_slot_config(panel_id=cycle_value(CUSTOM_PANEL_IDS, current, step))
+            if not process_poll_visible():
+                processes = []
+            if not io_poll_visible():
+                io_stats = IoStats()
+        elif item_id == "detail":
+            config = custom_slot_config(args.custom_layout, args.custom_slot)
+            set_custom_slot_config(detail=cycle_value(detail_levels_for_panel(config["panel"]), config["detail"], step))
+        status = f"tailor {item_id} {tailor_menu_value_text(item_id, args)}"
+        update_side_polling()
+        save_ui_settings()
 
     def apply_menu_change(delta: int) -> None:
         nonlocal upper_power_mode, lower_power_mode, upper_io_mode, lower_io_mode, load_view
@@ -4800,14 +5532,82 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 help_visible,
                 menu_visible,
                 menu_selected,
+                tailor_visible,
+                tailor_menu_visible,
+                tailor_menu_selected,
+                tailor_name_buffer,
+                tailor_name_editing,
             )
             key = stdscr.getch()
+            if tailor_name_editing:
+                if key == -1:
+                    continue
+                if key in (27,):
+                    tailor_name_editing = False
+                    tailor_name_buffer = ""
+                    status = "tailor name cancelled"
+                    continue
+                if key in (curses.KEY_ENTER, 10, 13):
+                    cleaned = clean_custom_name(tailor_name_buffer)
+                    error = custom_name_error(cleaned)
+                    if error is not None:
+                        status = f"tailor name rejected: {error}"
+                    else:
+                        args.custom_name = cleaned
+                        status = f"tailor name {args.custom_name}"
+                        save_ui_settings()
+                    tailor_name_editing = False
+                    tailor_name_buffer = ""
+                    continue
+                if key in (curses.KEY_BACKSPACE, 8, 127):
+                    tailor_name_buffer = tailor_name_buffer[:-1]
+                    continue
+                if 32 <= key <= 126 and len(tailor_name_buffer) < 32:
+                    tailor_name_buffer += chr(key)
+                continue
             if key in (ord("q"), ord("Q"), 27):
+                if tailor_menu_visible or tailor_visible:
+                    tailor_menu_visible = False
+                    tailor_visible = False
+                    continue
                 if menu_visible or help_visible:
                     menu_visible = False
                     help_visible = False
                     continue
                 break
+            if tailor_visible:
+                slot_id = tailor_slot_for_key(key)
+                if slot_id is not None:
+                    args.custom_slot = slot_id
+                    tailor_menu_visible = True
+                    tailor_menu_selected = 0
+                    status = f"tailor slot {tailor_slot_number(slot_id)} {CUSTOM_SLOT_LABELS.get(slot_id, slot_id)}"
+                    continue
+                if key in (ord("T"),):
+                    tailor_visible = False
+                    tailor_menu_visible = False
+                    status = "tailor closed"
+                    continue
+                if tailor_menu_visible:
+                    if key in (curses.KEY_UP,):
+                        tailor_menu_selected = max(0, tailor_menu_selected - 1)
+                    elif key in (curses.KEY_DOWN, ord("\t")):
+                        tailor_menu_selected = (tailor_menu_selected + 1) % len(TAILOR_MENU_ITEMS)
+                    elif key == curses.KEY_LEFT:
+                        apply_tailor_change(-1)
+                    elif key == curses.KEY_RIGHT:
+                        apply_tailor_change(1)
+                    elif key in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                        if TAILOR_MENU_ITEMS[tailor_menu_selected] == "name":
+                            tailor_name_buffer = clean_custom_name(getattr(args, "custom_name", ""))
+                            tailor_name_editing = True
+                            status = "tailor name editing"
+                        else:
+                            apply_tailor_change(1)
+                    continue
+                if key in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                    tailor_menu_visible = True
+                    continue
             if menu_visible:
                 if key in (curses.KEY_UP,):
                     menu_selected = max(0, menu_selected - 1)
@@ -4843,14 +5643,26 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
             elif key in (ord("r"), ord("R")):
                 history.clear_power()
                 status = "power peaks/history reset"
-            elif key in (ord("t"), ord("T")):
+            elif key == ord("t"):
                 index = (themes.index(args.theme) + 1) % len(themes)
                 args.theme = themes[index]
                 colors = init_colors(args.theme)
                 save_ui_settings()
+            elif key == ord("T"):
+                if args.layout == "custom":
+                    tailor_visible = not tailor_visible
+                    tailor_menu_visible = False
+                    help_visible = False
+                    menu_visible = False
+                    status = "tailor open" if tailor_visible else "tailor closed"
+                else:
+                    status = "tailor needs custom layout"
             elif key in (ord("v"), ord("V")):
                 index = (layouts.index(args.layout) + 1) % len(layouts)
                 args.layout = layouts[index]
+                if args.layout != "custom":
+                    tailor_visible = False
+                    tailor_menu_visible = False
                 status = f"layout {args.layout}"
                 if not process_poll_visible():
                     processes = []
@@ -4882,29 +5694,29 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 status = f"io lower {IO_MODE_LABELS[lower_io_mode]}"
                 save_ui_settings()
             elif key == curses.KEY_UP:
-                if process_panel != "hidden":
+                if process_poll_visible():
                     process_selected = max(0, process_selected - 1)
                     pending_kill = None
             elif key == curses.KEY_DOWN:
-                if process_panel != "hidden":
+                if process_poll_visible():
                     process_selected = min(max(0, len(processes) - 1), process_selected + 1)
                     pending_kill = None
             elif key == curses.KEY_LEFT:
-                if process_panel != "hidden":
+                if process_poll_visible():
                     process_sort = cycle_value(PROCESS_SORTS, process_sort, -1)
                     process_selected = 0
                     pending_kill = None
                     status = f"process sort {process_sort}"
                     save_ui_settings()
             elif key == curses.KEY_RIGHT:
-                if process_panel != "hidden":
+                if process_poll_visible():
                     process_sort = cycle_value(PROCESS_SORTS, process_sort, 1)
                     process_selected = 0
                     pending_kill = None
                     status = f"process sort {process_sort}"
                     save_ui_settings()
             elif key in (ord("k"), ord("K")):
-                if process_panel != "hidden":
+                if process_poll_visible():
                     ordered = sorted_processes(processes, process_sort)
                     if 0 <= process_selected < len(ordered):
                         target = ordered[process_selected]
@@ -5157,10 +5969,38 @@ def memory_to_report_dict(memory: MemoryStats) -> dict[str, Any]:
     }
 
 
+def battery_state_text(battery: BatteryStats) -> str:
+    if not battery_supported(battery):
+        return "unsupported"
+    if battery.charging is True:
+        return "charging"
+    if battery.external_connected is True:
+        return "plugged"
+    if battery.external_connected is False or battery.charging is False:
+        return "discharging"
+    return "unknown"
+
+
+def usb_c_state_text(usb_c: UsbCStats) -> str:
+    if not usb_c_supported(usb_c):
+        return "unsupported"
+    active = usb_c.active_port
+    if usb_c.charging is True:
+        return "charging"
+    if usb_c.external_connected is True:
+        return "plugged"
+    if active and active.connected:
+        return "PD active"
+    if usb_c.external_connected is False:
+        return "no input"
+    return "unknown"
+
+
 def battery_to_report_dict(battery: BatteryStats) -> dict[str, Any]:
     return {
+        "supported": battery_supported(battery),
         "charge": fmt_pct(battery.charge_pct).strip(),
-        "state": "charging" if battery.charging else "plugged" if battery.external_connected else "discharging",
+        "state": battery_state_text(battery),
         "power": fmt_power(battery.power_mw),
         "temperature": fmt_temp(battery.temperature_c),
         "health": fmt_pct(battery.health_pct).strip(),
@@ -5170,12 +6010,17 @@ def battery_to_report_dict(battery: BatteryStats) -> dict[str, Any]:
 
 def usb_to_report_dict(usb_c: UsbCStats) -> dict[str, Any]:
     active = usb_c.active_port
+    input_active = bool(active and active.connected and usb_c.external_connected is not False)
+    voltage = first_non_none(usb_c.system_voltage_v, usb_c.adapter_voltage_v, active.voltage_v if active else None) if input_active else None
+    current = first_non_none(usb_c.system_current_a, usb_c.adapter_current_a, active.current_a if active else None) if input_active else None
+    power = first_non_none(usb_c.system_power_w, usb_c.adapter_contract_power_w, usb_c.adapter_power_w, active.power_w if active else None) if input_active else None
     return {
-        "state": "charging" if usb_c.charging else "plugged" if usb_c.external_connected else "no input",
+        "supported": usb_c_supported(usb_c),
+        "state": usb_c_state_text(usb_c),
         "active_port": active.label if active else "n/a",
-        "voltage": fmt_voltage(first_non_none(usb_c.system_voltage_v, usb_c.adapter_voltage_v)),
-        "current": fmt_current(first_non_none(usb_c.system_current_a, usb_c.adapter_current_a)),
-        "power": fmt_watts(first_non_none(usb_c.system_power_w, usb_c.adapter_contract_power_w, usb_c.adapter_power_w)),
+        "voltage": fmt_voltage(voltage),
+        "current": fmt_current(current),
+        "power": fmt_watts(power),
         "ports": [{"label": port.label, "connected": port.connected, "role": port.role} for port in usb_c.ports],
     }
 
@@ -5302,7 +6147,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--layout",
         type=layout_arg,
         default=settings.get("layout", "full"),
-        metavar="{full,compact,focus}",
+        metavar="{full,compact,focus,custom}",
         help="dashboard layout preset",
     )
     parser.add_argument("--show-io", action="store_true", default=settings.get("show_io", False), help="show compact disk/network panel")
@@ -5323,6 +6168,9 @@ def build_parser() -> argparse.ArgumentParser:
         alert_temp_c=settings.get("alert_temp_c", HIGH_TEMP_C),
         alert_swap_gib=settings.get("alert_swap_gib", DEFAULT_ALERT_SWAP_GIB),
         alert_battery_drain_w=settings.get("alert_battery_drain_w", DEFAULT_ALERT_BATTERY_DRAIN_W),
+        custom_slot=settings.get("custom_slot", CUSTOM_SLOT_IDS[0]),
+        custom_layout=settings.get("custom_layout", {}),
+        custom_name=settings.get("custom_name", ""),
     )
 
     subparsers = parser.add_subparsers(dest="command")

@@ -1,4 +1,4 @@
-.TH ASMOND 1 "June 6, 2026" "Asmond 0.3.1" "User Commands"
+.TH ASMOND 1 "June 8, 2026" "Asmond 0.4.0" "User Commands"
 .SH NAME
 asmond \- macOS power, thermal and activity monitor for Apple Silicon
 .SH SYNOPSIS
@@ -71,12 +71,17 @@ Choose the dashboard layout.
 .I layout
 may be
 .BR full ,
-.B compact
+.BR compact ,
+.B focus
 or
-.BR focus .
+.BR custom .
 The
 .B focus
 layout is the combined power and thermal view.
+The
+.B custom
+layout starts from the full grid and can be edited with Tailor mode
+.RB ( T ).
 .TP
 .B --show-io
 Show the compact disk/network I/O panel on startup.
@@ -148,6 +153,15 @@ Toggle the settings menu.
 .B t
 Cycle the color theme.
 .TP
+.B T
+Toggle Tailor mode for the
+.B custom
+layout. Numbered slots can be selected with
+.B 1
+through
+.B 7
+and edited in a small slot menu.
+.TP
 .B + / -
 Change and apply the sample interval.
 .TP
@@ -157,9 +171,10 @@ Reset power graph history and peak values.
 .B v
 Cycle the layout preset:
 .BR full ,
-.B compact
+.BR compact ,
+.B focus
 or
-.BR focus .
+.BR custom .
 .TP
 .B d
 Show or hide the disk/network I/O panel.
@@ -221,8 +236,8 @@ to close.
 .SH FILES
 .TP
 .I ~/Library/Application Support/Asmond/settings.json
-Saved UI settings, including theme, interval, layout, graph sources, process
-panel mode and alert thresholds.
+Saved UI settings, including theme, interval, layout, custom slots, graph
+sources, process panel mode and alert thresholds.
 .PP
 If Asmond is explicitly launched through
 .BR sudo (8)
