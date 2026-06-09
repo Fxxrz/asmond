@@ -1,0 +1,4 @@
+Name                               ID     CPU ms/s  User%  Deadlines (<2 ms, 2-5 ms)  Wakeups (Intr, Pkg idle)  GPU ms/s  Energy Impact
+WindowServer                       611    188.39    63.79  30.43   5.89               207.14  114.86            0.00      14.98
+Code Helper (GPU)                  59691  0.26      77.26  0.00    0.00               0.98    0.00              0.00      0.02
+ALL_TASKS                          -2     649.10    59.87  145.06  12.83              1768.40 915.78            0.00      58.89

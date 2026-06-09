@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a problem with Asmond
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please avoid pasting raw IOKit dumps, serial numbers, private paths or screenshots with personal data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe what you expected and what happened instead.
+      placeholder: Asmond showed ... but ...
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and chip
+      placeholder: MacBook Air M4, Mac mini M2 Pro, ...
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: 15.5, 26.0 beta, ...
+  - type: input
+    id: asmond
+    attributes:
+      label: Asmond version
+      placeholder: asmond --version
+  - type: textarea
+    id: doctor
+    attributes:
+      label: asmond doctor
+      description: Paste the output of `asmond doctor`.
+      render: text
+  - type: textarea
+    id: report
+    attributes:
+      label: asmond report
+      description: Optional. Paste `asmond report` or `asmond report --live` if useful.
+      render: markdown
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: Screenshots, terminal size, install method or anything else that helps.
