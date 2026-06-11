@@ -14,6 +14,8 @@ import unittest
 from pathlib import Path
 
 import asmond
+import asmond_metrics_memory
+import asmond_process
 
 
 class SwapParsingTests(unittest.TestCase):
@@ -76,6 +78,69 @@ class IoStatsTests(unittest.TestCase):
         self.assertEqual(stats.disk_read_bps, 2000)
         self.assertEqual(stats.disk_write_bps, 500)
         self.assertEqual(stats.disk_bps, 2500)
+
+    def test_read_network_bytes_ignores_virtual_and_duplicate_interfaces(self) -> None:
+        text = """Name  Mtu   Network     Address            Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+lo0   16384 <Link#1>    00:00:00:00:00:00  1     0     100    1     0     200    0
+en0   1500  <Link#4>    aa:bb:cc:dd:ee:ff  10    0     1000   20    0     2000   0
+en0   1500  <Link#4>    aa:bb:cc:dd:ee:ff  10    0     9999   20    0     9999   0
+utun0 1380  <Link#9>    00:00:00:00:00:00  1     0     300    1     0     400    0
+"""
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, text.encode(), b"")
+
+        self.assertEqual(asmond_metrics_memory.read_network_bytes(run=fake_run), (1000, 2000))
+
+    def test_read_disk_counters_uses_ioreg_plist_statistics(self) -> None:
+        payload = [
+            {
+                "IOObjectClass": "IOBlockStorageDriver",
+                "Statistics": {
+                    "Bytes (Read)": 4096,
+                    "Bytes (Write)": 8192,
+                },
+            }
+        ]
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, plistlib.dumps(payload), b"")
+
+        self.assertEqual(asmond_metrics_memory.read_disk_counters(run=fake_run), (4096, 8192))
+
+    def test_read_memory_stats_combines_vm_stat_pressure_and_swap(self) -> None:
+        vm_stat = """Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free:                               100.
+Pages active:                             200.
+Pages speculative:                         50.
+Pages wired down:                          80.
+Pages purgeable:                           10.
+File-backed pages:                         60.
+Pages occupied by compressor:              40.
+"""
+        pressure = "System-wide memory free percentage: 73%\n"
+        swap = "total = 2.00G  used = 512.00M  free = 1.50G  (encrypted)\n"
+
+        def fake_run(command, **kwargs):
+            if command[:3] == ["sysctl", "-n", "hw.memsize"]:
+                return subprocess.CompletedProcess(command, 0, str(4096 * 1000).encode(), b"")
+            if command == ["vm_stat"]:
+                return subprocess.CompletedProcess(command, 0, vm_stat.encode(), b"")
+            if command == ["memory_pressure"]:
+                return subprocess.CompletedProcess(command, 0, pressure.encode(), b"")
+            if command[:3] == ["sysctl", "-n", "vm.swapusage"]:
+                return subprocess.CompletedProcess(command, 0, swap.encode(), b"")
+            return subprocess.CompletedProcess(command, 1, b"", b"")
+
+        stats = asmond_metrics_memory.read_memory_stats(run=fake_run)
+        self.assertEqual(stats.total_bytes, 4096 * 1000)
+        self.assertEqual(stats.free_bytes, 150 * 4096)
+        self.assertEqual(stats.cached_bytes, 70 * 4096)
+        self.assertEqual(stats.active_bytes, 200 * 4096)
+        self.assertEqual(stats.wired_bytes, 80 * 4096)
+        self.assertEqual(stats.compressed_bytes, 40 * 4096)
+        self.assertEqual(stats.system_free_pct, 73.0)
+        self.assertEqual(stats.swap_used_bytes, 512 * 1024**2)
 
     def test_side_worker_skips_hidden_io_and_process_polling(self) -> None:
         calls = {"io": 0, "processes": 0}
@@ -143,6 +208,61 @@ class BandwidthParsingTests(unittest.TestCase):
         self.assertEqual(counters, {"ANE": 3.0})
 
 
+class PowermetricsFixtureTests(unittest.TestCase):
+    def test_apple_silicon_fixture_parses_structured_sample(self) -> None:
+        fixture = Path(__file__).parent / "tests" / "fixtures" / "apple_silicon_sample.plist"
+        sample = asmond.sample_from_plist(plistlib.loads(fixture.read_bytes()), interval_s=0.5)
+
+        self.assertAlmostEqual(sample.cpu_power_mw or 0.0, 500.0)
+        self.assertAlmostEqual(sample.gpu_power_mw or 0.0, 200.0)
+        self.assertEqual(sample.ane_power_mw, 0.0)
+        self.assertAlmostEqual(sample.soc_power_mw or 0.0, 1250.0)
+        self.assertAlmostEqual(sample.e_usage_pct or 0.0, 25.0)
+        self.assertAlmostEqual(sample.p_usage_pct or 0.0, 50.0)
+        self.assertAlmostEqual(sample.cpu_usage_pct or 0.0, 37.5)
+        self.assertAlmostEqual(sample.gpu_usage_pct or 0.0, 10.0)
+        self.assertAlmostEqual(sample.e_freq_mhz or 0.0, 1800.0)
+        self.assertAlmostEqual(sample.p_freq_mhz or 0.0, 3200.0)
+        self.assertAlmostEqual(sample.gpu_freq_mhz or 0.0, 600.0)
+        self.assertAlmostEqual(sample.soc_temp_c or 0.0, 37.3)
+        self.assertAlmostEqual(sample.temp_max_c or 0.0, 38.4)
+        self.assertEqual(sample.thermal_pressure, "Nominal")
+        self.assertEqual(
+            [(core.label, round(core.usage_pct or 0.0)) for core in sample.cores],
+            [("P6", 55), ("P7", 45), ("E0", 20), ("E1", 30)],
+        )
+        self.assertEqual(sample.memory_bandwidth_gbps, {"CPU": 1.5, "DRAM": 3.0})
+
+    def test_temperature_fallback_ignores_limits_battery_and_adapter(self) -> None:
+        sample = asmond.sample_from_plist(
+            {
+                "soc_die_temperature": "309.15 K",
+                "battery_temperature": "99 C",
+                "adapter_temperature": "100 C",
+                "soc_temp_limit": "110 C",
+                "thermal_target_temperature": "85 C",
+            }
+        )
+        self.assertAlmostEqual(sample.soc_temp_c or 0.0, 36.0)
+        self.assertAlmostEqual(sample.temp_max_c or 0.0, 36.0)
+
+    def test_throttle_reasons_are_limited_and_mark_sample_throttled(self) -> None:
+        sample = asmond.sample_from_plist(
+            {
+                "thermal_pressure": "Nominal",
+                "cpu_throttle": 1,
+                "gpu_limit": True,
+                "ane_limit": "active",
+                "extra_limit": 2,
+                "ignored_limit": 0,
+            }
+        )
+        self.assertTrue(sample.throttled)
+        self.assertEqual(len(sample.throttle_reasons), 4)
+        self.assertTrue(any("cpu throttle" in reason for reason in sample.throttle_reasons))
+        self.assertFalse(any("ignored limit" in reason for reason in sample.throttle_reasons))
+
+
 class UsbCTests(unittest.TestCase):
     def test_decode_fixed_pdo(self) -> None:
         label, voltage, current, power = asmond.decode_fixed_pdo(0x0004B12C)
@@ -173,6 +293,25 @@ class UsbCTests(unittest.TestCase):
         self.assertAlmostEqual(stats.active_port.voltage_v or 0.0, 20.0)
         self.assertAlmostEqual(stats.active_port.current_a or 0.0, 1.5)
         self.assertAlmostEqual(stats.active_port.power_w or 0.0, 30.0)
+
+    def test_usb_c_stats_reads_numbered_source_pdos(self) -> None:
+        stats = asmond.usb_c_stats_from_item(
+            {
+                "ExternalConnected": True,
+                "PortControllerInfo": [
+                    {
+                        "PortControllerActiveContractRdo": 0x10025896,
+                        "PortControllerSrcPdoCount": 1,
+                        "PortControllerSrcPdo1": 0x0006412C,
+                    }
+                ],
+            }
+        )
+        self.assertIsNotNone(stats.active_port)
+        assert stats.active_port is not None
+        self.assertEqual(stats.active_port.pdo_labels, ["20V 3A"])
+        self.assertAlmostEqual(stats.active_port.max_power_w or 0.0, 60.0)
+        self.assertAlmostEqual(stats.active_port.voltage_v or 0.0, 20.0)
 
     def test_usb_c_stats_prefers_connected_port_over_best_adapter_index(self) -> None:
         stats = asmond.usb_c_stats_from_item(
@@ -316,6 +455,32 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(sample.soc_power_mw, 789)
         self.assertIsNone(sample.ane_power_mw)
 
+    def test_soc_fallback_does_not_treat_component_power_as_total(self) -> None:
+        sample = asmond.sample_from_plist(
+            {
+                "processor": {
+                    "cpu_power": 123,
+                    "gpu_power": 50,
+                }
+            }
+        )
+        self.assertEqual(sample.cpu_power_mw, 123)
+        self.assertEqual(sample.gpu_power_mw, 50)
+        self.assertIsNone(sample.soc_power_mw)
+        self.assertEqual(asmond.effective_total_power_mw(sample), 173)
+
+    def test_structured_processor_combined_power_still_sets_total(self) -> None:
+        sample = asmond.sample_from_plist(
+            {
+                "processor": {
+                    "combined_power": 5.0,
+                    "cpu_power": 123,
+                }
+            }
+        )
+        self.assertEqual(sample.cpu_power_mw, 123)
+        self.assertEqual(sample.soc_power_mw, 5000)
+
     def test_usage_fallback_ignores_active_count_rates(self) -> None:
         sample = asmond.sample_from_plist(
             {
@@ -425,6 +590,54 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("ioreg", text)
         self.assertIn("ps", text)
 
+    def test_source_status_includes_side_metric_warnings(self) -> None:
+        args = argparse.Namespace(mock=False, show_io=False, layout="focus")
+        text = asmond.source_status(
+            args,
+            asmond.MetricSample(),
+            asmond.MemoryStats(total_bytes=1, available_bytes=1),
+            asmond.BatteryStats(charge_pct=50.0),
+            asmond.UsbCStats(),
+            asmond.IoStats(),
+            [],
+            "hidden",
+            ("vm:RuntimeError", "io:TimeoutError"),
+        )
+        self.assertIn("warn vm:RuntimeError,io:TimeoutError", text)
+
+    def test_side_worker_reports_polling_errors(self) -> None:
+        old_memory = asmond.read_memory_stats
+        old_charge = asmond.read_charge_stats
+        updates: queue.Queue[asmond.SideMetricsUpdate] = queue.Queue()
+        stop_event = threading.Event()
+
+        def broken_memory():
+            raise RuntimeError("boom")
+
+        try:
+            asmond.read_memory_stats = broken_memory
+            asmond.read_charge_stats = lambda: (asmond.BatteryStats(), asmond.UsbCStats())
+            worker = threading.Thread(
+                target=asmond.side_metrics_worker,
+                args=(updates, stop_event, asmond.SideMetricsPollState(), False),
+                daemon=True,
+            )
+            worker.start()
+            deadline = time.monotonic() + 1.0
+            warnings: list[str] = []
+            while time.monotonic() < deadline and not warnings:
+                try:
+                    warnings.extend(updates.get(timeout=0.1).warnings)
+                except queue.Empty:
+                    pass
+            self.assertIn("vm:RuntimeError", warnings)
+        finally:
+            stop_event.set()
+            if "worker" in locals():
+                worker.join(timeout=1.0)
+            asmond.read_memory_stats = old_memory
+            asmond.read_charge_stats = old_charge
+
     def test_display_path_uses_path_relative_to_home(self) -> None:
         old_home = asmond.real_user_home
         try:
@@ -468,6 +681,33 @@ class DiagnosticsTests(unittest.TestCase):
             asmond.read_memory_stats = old_memory
             asmond.read_charge_stats = old_charge
 
+    def test_live_report_timeout_returns_warning_sample(self) -> None:
+        old_run = asmond.subprocess.run
+        old_ensure = asmond.ensure_powermetrics_access
+        old_memory = asmond.read_memory_stats
+        old_charge = asmond.read_charge_stats
+
+        def fake_run(command, **kwargs):
+            if "powermetrics" not in command:
+                return old_run(command, **kwargs)
+            raise subprocess.TimeoutExpired(command, timeout=kwargs.get("timeout"))
+
+        try:
+            asmond.subprocess.run = fake_run
+            asmond.ensure_powermetrics_access = lambda args: None
+            asmond.read_memory_stats = lambda: asmond.MemoryStats()
+            asmond.read_charge_stats = lambda: (asmond.BatteryStats(), asmond.UsbCStats())
+            args = argparse.Namespace(mock=False, live=True, interval=1.0)
+            data = asmond.report_data(args)
+            self.assertIn("timed out", data["snapshot"]["powermetrics"]["warning"])
+            self.assertEqual(data["diagnostics"][-1]["name"], "powermetrics sample")
+            self.assertEqual(data["diagnostics"][-1]["status"], "fail")
+        finally:
+            asmond.subprocess.run = old_run
+            asmond.ensure_powermetrics_access = old_ensure
+            asmond.read_memory_stats = old_memory
+            asmond.read_charge_stats = old_charge
+
     def test_probe_returns_error_for_invalid_plist(self) -> None:
         old_run = asmond.subprocess.run
         old_ensure = asmond.ensure_powermetrics_access
@@ -490,6 +730,18 @@ class DiagnosticsTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 args = asmond.build_parser().parse_args(argv)
                 self.assertTrue(args.mock)
+
+    def test_mock_live_report_labels_demo_sample(self) -> None:
+        args = argparse.Namespace(mock=True, live=True, interval=1.0)
+        data = asmond.report_data(args)
+        self.assertEqual(data["diagnostics"][-1], {"name": "mock sample", "status": "ok", "note": "generated demo snapshot"})
+
+    def test_print_sample_uses_effective_total_power(self) -> None:
+        sample = asmond.MetricSample(cpu_power_mw=100, gpu_power_mw=50)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            asmond.print_sample(sample)
+        self.assertIn("SoC/Total:    150 mW", output.getvalue())
 
 
 class PackagingTests(unittest.TestCase):
@@ -910,6 +1162,46 @@ ALL_TASKS                          -2     649.10    59.87  145.06  12.83        
         finally:
             asmond.subprocess.run = old_run
             asmond.refresh_sudo_credentials = old_refresh
+
+    def test_process_gpu_exception_path_backs_off(self) -> None:
+        calls = 0
+        state = asmond.ProcessGpuProbeState()
+
+        def fake_run(command, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+        values = asmond_process.read_process_gpu_pcts(
+            probe_state=state,
+            run=fake_run,
+            refresh_sudo=lambda prompt=False: (True, ""),
+        )
+        self.assertEqual(values, {})
+        self.assertFalse(state.can_probe())
+        self.assertEqual(calls, 2)
+
+    def test_read_processes_can_prefer_full_command_for_validation(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if "command=" in command[-1]:
+                text = "123 alice 1 02:03 12.5 3.4 45678 /usr/bin/python3 worker.py --job a\n"
+            else:
+                text = "123 alice 1 02:03 12.5 3.4 45678 python3\n"
+            return subprocess.CompletedProcess(command, 0, text.encode(), b"")
+
+        process = asmond_process.read_processes(run=fake_run, full_command=True)[0]
+        self.assertIn("command=", calls[0][-1])
+        self.assertEqual(process.command, "python3 worker.py --job a")
+        self.assertEqual(process.full_command, "/usr/bin/python3 worker.py --job a")
+
+    def test_pending_kill_detects_changed_full_command_arguments(self) -> None:
+        original = asmond.ProcessInfo(123, 1.0, 1.0, 100, "python3", 1, "02:03", "/usr/bin/python3 a.py", "alice")
+        changed = asmond.ProcessInfo(123, 1.0, 1.0, 100, "python3", 1, "02:04", "/usr/bin/python3 b.py", "alice")
+        pending = asmond.PendingKill.from_process(original, time.monotonic() + 1.0)
+        self.assertFalse(pending.matches(changed))
 
     def test_merge_process_gpu_pcts(self) -> None:
         processes = [asmond.ProcessInfo(123, 1.0, 2.0, 4096, "a"), asmond.ProcessInfo(456, 3.0, 4.0, 8192, "b")]

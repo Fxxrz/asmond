@@ -172,6 +172,7 @@ class SideMetricsUpdate:
     usb_c: UsbCStats | None = None
     io_stats: IoStats | None = None
     processes: list[ProcessInfo] | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

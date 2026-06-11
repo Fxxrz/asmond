@@ -1,4 +1,4 @@
-.TH ASMOND 1 "June 9, 2026" "Asmond 0.4.1" "User Commands"
+.TH ASMOND 1 "June 11, 2026" "Asmond 0.4.2" "User Commands"
 .SH NAME
 asmond \- macOS power, thermal and activity monitor for Apple Silicon
 .SH SYNOPSIS
@@ -111,8 +111,11 @@ Print one parsed
 sample and exit.
 .TP
 .B probe --raw
-Print one parsed sample and then list flattened raw plist keys. This helps when
-checking which counters a macOS version exposes.
+Print one parsed sample and then list flattened raw plist keys and values. This
+helps when checking which counters a macOS version exposes. The output is not
+anonymized; use
+.B report
+for public support output.
 .TP
 .B doctor
 Check local dependencies and data sources, including macOS architecture,
@@ -294,7 +297,7 @@ Use the compact layout and Nord theme:
 Show one parsed live sample:
 .B asmond probe
 .TP
-Inspect raw exposed plist keys:
+Inspect raw exposed plist keys and values:
 .B asmond probe --raw
 .TP
 Check local data sources:

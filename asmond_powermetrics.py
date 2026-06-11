@@ -21,6 +21,20 @@ POWER_FALLBACK_EXCLUDES = (
     "idle",
     "active",
 )
+SOC_POWER_FALLBACK_EXCLUDES = (
+    *POWER_FALLBACK_EXCLUDES,
+    "battery",
+    "cpu",
+    "gpu",
+    "igpu",
+    "ane",
+    "neural",
+    "media",
+    "decoder",
+    "encoder",
+    "video",
+    "dram",
+)
 USAGE_FALLBACK_EXCLUDES = (
     "frequency",
     "freq",
@@ -472,8 +486,8 @@ def sample_from_plist(obj: dict[str, Any], interval_s: float = 1.0) -> MetricSam
     sample.soc_power_mw = first_non_none(sample.soc_power_mw, find_best(
         flat,
         ("power",),
-        any_of=("soc", "processor", "package", "combined"),
-        exclude=(*POWER_FALLBACK_EXCLUDES, "battery"),
+        any_of=("soc", "package", "combined", "total"),
+        exclude=SOC_POWER_FALLBACK_EXCLUDES,
         converter=as_mw,
     ))
     sample.battery_power_mw = first_non_none(sample.battery_power_mw, find_best(

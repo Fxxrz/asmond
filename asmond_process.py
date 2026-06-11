@@ -290,6 +290,7 @@ def read_process_gpu_pcts(
             timeout=max(4.0, sample_ms / 1000.0 + 3.0),
         )
     except Exception:
+        probe_state.mark_unavailable()
         return {}
     if proc.returncode != 0 or not proc.stdout:
         probe_state.mark_unavailable()
@@ -325,11 +326,15 @@ def read_processes(
     include_gpu: bool = False,
     run: RunCommand = subprocess.run,
     read_gpu: Callable[[], dict[int, float]] | None = None,
+    full_command: bool = False,
 ) -> list[ProcessInfo]:
+    columns = "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss="
+    command_field = "command=" if full_command else "comm="
+    fallback_field = "comm=" if full_command else "command="
     commands = (
-        ["/bin/ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
-        ["/bin/ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,command="],
-        ["ps", "-axo", "pid=,user=,ppid=,etime=,pcpu=,pmem=,rss=,comm="],
+        ["/bin/ps", "-axo", f"{columns},{command_field}"],
+        ["/bin/ps", "-axo", f"{columns},{fallback_field}"],
+        ["ps", "-axo", f"{columns},{command_field}"],
     )
     processes: list[ProcessInfo] = []
     for command in commands:

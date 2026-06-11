@@ -70,11 +70,13 @@ Show one parsed sample:
 python3 asmond.py probe
 ```
 
-Inspect raw flattened `powermetrics` keys:
+Inspect raw flattened `powermetrics` keys and values:
 
 ```bash
 python3 asmond.py probe --raw
 ```
+
+`probe --raw` is not anonymized. Prefer `asmond report` for public bug reports.
 
 Check local data sources without starting the TUI:
 
@@ -106,6 +108,14 @@ Run tests:
 
 ```bash
 python3 -m unittest -v
+```
+
+Measure test coverage:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m coverage run -m unittest
+python3 -m coverage report
 ```
 
 Preview the manual page from a checkout:
@@ -155,6 +165,8 @@ Settings are saved in:
 ```
 
 If Asmond is explicitly launched via `sudo` for a non-dashboard command, the settings path is resolved through `SUDO_USER` so the file still belongs to the real user.
+
+Command-line help shows the currently saved defaults for options such as interval, theme and layout.
 
 Remove saved settings:
 

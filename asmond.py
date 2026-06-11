@@ -122,7 +122,7 @@ from asmond_settings import settings_owner
 
 
 APP_NAME = "Asmond"
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 POWER_SAMPLERS = "cpu_power,gpu_power,ane_power,thermal,battery"
 IOHID_TEMP_TYPE = 15
 IOHID_TEMP_FIELD = IOHID_TEMP_TYPE << 16
@@ -721,12 +721,26 @@ def decode_fixed_pdo(raw_value: Any) -> tuple[str, float | None, float | None, f
 
 def pdo_list_from_port(port: dict[str, Any]) -> list[int]:
     values = port.get("PortControllerPortPDO")
-    if not isinstance(values, list):
-        return []
-    count = int(dict_number(port, "PortControllerNPDOs") or len(values))
     pdos: list[int] = []
-    for value in values[: max(0, count)]:
-        raw = unsigned32(value if isinstance(value, int | float) else None)
+    if isinstance(values, list):
+        count = int(dict_number(port, "PortControllerNPDOs") or len(values))
+        for value in values[: max(0, count)]:
+            raw = unsigned32(value if isinstance(value, int | float) else None)
+            if raw:
+                pdos.append(raw)
+    if pdos:
+        return pdos
+    count = int(dict_number(port, "PortControllerSrcPdoCount") or 0)
+    indexes = range(1, max(0, count) + 1)
+    if count <= 0:
+        found = []
+        for key in port:
+            match = re.fullmatch(r"PortControllerSrcPdo(\d+)", str(key))
+            if match:
+                found.append(int(match.group(1)))
+        indexes = sorted(found)
+    for index in indexes:
+        raw = unsigned32(dict_number(port, f"PortControllerSrcPdo{index}"))
         if raw:
             pdos.append(raw)
     return pdos
@@ -993,8 +1007,20 @@ def read_process_gpu_pcts(
     )
 
 
-def read_processes(include_gpu: bool = False) -> list[ProcessInfo]:
-    return _read_processes(include_gpu=include_gpu, run=subprocess.run, read_gpu=read_process_gpu_pcts)
+def read_processes(include_gpu: bool = False, full_command: bool = False) -> list[ProcessInfo]:
+    return _read_processes(include_gpu=include_gpu, run=subprocess.run, read_gpu=read_process_gpu_pcts, full_command=full_command)
+
+
+def read_process_for_kill(pid: int) -> ProcessInfo | None:
+    return next((process for process in read_processes(full_command=True) if process.pid == pid), None)
+
+
+def process_identity_matches(left: ProcessInfo, right: ProcessInfo) -> bool:
+    return left.pid == right.pid and left.ppid == right.ppid and left.user == right.user
+
+
+def side_metric_warning(source: str, exc: Exception) -> str:
+    return f"{source}:{type(exc).__name__}"
 
 
 def side_metrics_worker(
@@ -1038,15 +1064,15 @@ def side_metrics_worker(
         if now >= next_memory:
             try:
                 updates.put(SideMetricsUpdate(memory=read_memory_stats()))
-            except Exception:
-                pass
+            except Exception as exc:
+                updates.put(SideMetricsUpdate(warnings=[side_metric_warning("vm", exc)]))
             next_memory = time.monotonic() + MEMORY_BATTERY_INTERVAL
         if now >= next_charge:
             try:
                 battery, usb_c = read_charge_stats()
                 updates.put(SideMetricsUpdate(battery=battery, usb_c=usb_c))
-            except Exception:
-                pass
+            except Exception as exc:
+                updates.put(SideMetricsUpdate(warnings=[side_metric_warning("ioreg", exc)]))
             next_charge = time.monotonic() + CHARGE_POLL_INTERVAL
 
         poll_io, poll_processes = poll_state.snapshot()
@@ -1056,8 +1082,8 @@ def side_metrics_worker(
                 current_io = read_io_snapshot()
                 updates.put(SideMetricsUpdate(io_stats=io_stats_from_snapshots(previous_io, current_io)))
                 previous_io = current_io
-            except Exception:
-                pass
+            except Exception as exc:
+                updates.put(SideMetricsUpdate(warnings=[side_metric_warning("io", exc)]))
             next_io = time.monotonic() + IO_POLL_INTERVAL
         elif not poll_io:
             previous_io = None
@@ -1067,8 +1093,8 @@ def side_metrics_worker(
         if poll_processes and now >= next_process:
             try:
                 updates.put(SideMetricsUpdate(processes=read_processes(include_gpu=True)))
-            except Exception:
-                pass
+            except Exception as exc:
+                updates.put(SideMetricsUpdate(warnings=[side_metric_warning("ps", exc)]))
             next_process = time.monotonic() + PROCESS_POLL_INTERVAL
         elif not poll_processes:
             next_process = now + PROCESS_POLL_INTERVAL
@@ -2956,6 +2982,7 @@ def source_status(
     io_stats: IoStats,
     processes: list[ProcessInfo],
     process_panel: str,
+    side_warnings: Iterable[str] = (),
 ) -> str:
     sources = ["mock" if args.mock else "pm"]
     missing: list[str] = []
@@ -2988,6 +3015,9 @@ def source_status(
     text = "src " + ",".join(sources)
     if missing:
         text += "  miss " + ",".join(dict.fromkeys(missing))
+    warnings = list(dict.fromkeys(str(warning) for warning in side_warnings if warning))
+    if warnings:
+        text += "  warn " + ",".join(warnings[-2:])
     return text
 
 
@@ -3666,6 +3696,7 @@ def draw_dashboard(
     charge_panel: str,
     process_selected: int,
     pending_kill_pid: int | None,
+    side_warnings: Iterable[str],
     help_visible: bool,
     menu_visible: bool,
     menu_selected: int,
@@ -3710,7 +3741,7 @@ def draw_dashboard(
     sample = sample or MetricSample(warning="waiting for powermetrics sample")
     alerts = build_alerts(sample, memory, battery, args)
     status_attr = colors["bad"] | curses.A_BOLD if any(alert in ("THROTTLE",) for alert in alerts) else colors["warn"] if alerts else colors["muted"]
-    source_text = source_status(args, sample, memory, battery, usb_c, io_stats, processes, process_panel)
+    source_text = source_status(args, sample, memory, battery, usb_c, io_stats, processes, process_panel, side_warnings)
     status_text = f"{status}  {source_text}"
     if alerts:
         status_text += f"  ALERT {' | '.join(alerts)}"
@@ -3879,6 +3910,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
     usb_c_stats = UsbCStats()
     processes: list[ProcessInfo] = []
     io_stats = IoStats()
+    side_warnings: deque[str] = deque(maxlen=4)
     upper_power_mode = args.upper_power_mode if args.upper_power_mode in POWER_MODES else "soc"
     lower_power_mode = args.lower_power_mode if args.lower_power_mode in POWER_MODES else "cpu"
     upper_io_mode = args.upper_io_mode if args.upper_io_mode in IO_MODES else "disk_read"
@@ -4085,6 +4117,8 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                     if update.processes is not None:
                         processes = update.processes
                         process_selected = min(process_selected, max(0, len(processes) - 1))
+                    for warning in update.warnings:
+                        side_warnings.append(warning)
                 except queue.Empty:
                     break
 
@@ -4110,6 +4144,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                 charge_panel,
                 process_selected,
                 pending_kill.pid if pending_kill else None,
+                tuple(side_warnings),
                 help_visible,
                 menu_visible,
                 menu_selected,
@@ -4307,7 +4342,7 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                             status = "root process kill disabled in settings"
                             pending_kill = None
                         elif pending_kill is not None and pending_kill.pid == target.pid and now <= pending_kill.until:
-                            fresh = next((process for process in read_processes() if process.pid == target.pid), None)
+                            fresh = read_process_for_kill(target.pid)
                             if fresh is None:
                                 status = f"process {target.pid} already exited"
                                 pending_kill = None
@@ -4328,7 +4363,17 @@ def run_curses(stdscr: curses.window, args: argparse.Namespace) -> None:
                                 status = f"kill failed: {exc}"
                             pending_kill = None
                         else:
-                            pending_kill = PendingKill.from_process(target, now + KILL_CONFIRM_SECONDS)
+                            fresh = read_process_for_kill(target.pid)
+                            if fresh is None:
+                                status = f"process {target.pid} already exited"
+                                pending_kill = None
+                                continue
+                            if not process_identity_matches(target, fresh):
+                                status = f"process {target.pid} changed; kill cancelled"
+                                pending_kill = None
+                                processes = read_processes()
+                                continue
+                            pending_kill = PendingKill.from_process(fresh, now + KILL_CONFIRM_SECONDS)
                             status = f"press k again to TERM {target.pid} {target.command}"
             elif key == ord("s"):
                 lower_power_mode = "soc"
@@ -4426,7 +4471,7 @@ def print_sample(sample: MetricSample) -> None:
     print(f"GPU power:    {fmt_power(sample.gpu_power_mw)}")
     print(f"ANE/NPU power:{fmt_power(sample.ane_power_mw):>10}")
     print(f"Media power:  {fmt_power(sample.media_power_mw)}")
-    print(f"SoC/Total:    {fmt_power(sample.soc_power_mw)}")
+    print(f"SoC/Total:    {fmt_power(effective_total_power_mw(sample))}")
     print(f"P usage:      {fmt_pct(sample.p_usage_pct)}  {fmt_freq(sample.p_freq_mhz)}")
     print(f"E usage:      {fmt_pct(sample.e_usage_pct)}  {fmt_freq(sample.e_freq_mhz)}")
     print(f"GPU usage:    {fmt_pct(sample.gpu_usage_pct)}  {fmt_freq(sample.gpu_freq_mhz)}")
@@ -4627,7 +4672,12 @@ def collect_report_sample(args: argparse.Namespace) -> MetricSample | None:
         return None
     ensure_powermetrics_access(args)
     cmd = powermetrics_command(int(args.interval * 1000), "1")
-    proc = subprocess.run(cmd, check=False, capture_output=True, timeout=max(5.0, args.interval + 4.0))
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, timeout=max(5.0, args.interval + 4.0))
+    except subprocess.TimeoutExpired:
+        return MetricSample(warning="powermetrics timed out while collecting a report sample")
+    except Exception as exc:
+        return MetricSample(warning=f"powermetrics sample failed: {exc}")
     if proc.returncode != 0 or not proc.stdout:
         return MetricSample(warning=(proc.stderr.decode("utf-8", "ignore").strip() or f"powermetrics exited {proc.returncode}"))
     raw = proc.stdout.split(b"\0", 1)[0].strip()
@@ -4649,7 +4699,9 @@ def diagnostic_rows_for_report(args: argparse.Namespace, sample: MetricSample | 
     diag_args.live = False
     rows = diagnostic_rows(diag_args)
     if getattr(args, "live", False):
-        if sample is None:
+        if getattr(args, "mock", False):
+            rows.append(("mock sample", "ok", "generated demo snapshot"))
+        elif sample is None:
             rows.append(("powermetrics sample", "warn", "not requested"))
         elif sample.warning:
             rows.append(("powermetrics sample", "fail", sample.warning))
