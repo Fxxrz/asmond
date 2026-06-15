@@ -1,0 +1,327 @@
+.TH ASMOND 1 "June 15, 2026" "Asmond 0.5.0" "User Commands"
+.SH NAME
+asmond \- macOS power, thermal and activity monitor
+.SH SYNOPSIS
+.B asmond
+.RI [ options ]
+.br
+.B asmond
+.RI [ options ]
+.B probe
+.RI [ --raw ]
+.br
+.B asmond
+.RI [ options ]
+.B doctor
+.RI [ --json ]
+.RI [ --live ]
+.br
+.B asmond
+.RI [ options ]
+.B report
+.RI [ --json ]
+.RI [ --live ]
+.SH DESCRIPTION
+.B Asmond
+is a compact terminal monitor for macOS, focused on Apple Silicon with early
+experimental Intel Mac support.
+It combines Apple's
+.BR powermetrics (1)
+plist stream with system counters for memory, swap, battery, USB-C/MagSafe
+charging, disk and network I/O, and processes.
+.PP
+The dashboard shows SoC, CPU, GPU and ANE/NPU power where macOS exposes those
+values, thermal pressure and throttling state, CPU/GPU load, clocks, RAM and
+swap pressure, battery details, charging port information and optional process
+and I/O panels.
+.PP
+The terminal UI stays unprivileged. Asmond starts only
+.BR powermetrics (1)
+through
+.BR sudo (8)
+when live privileged telemetry is required.
+.SH OPTIONS
+.TP
+.B --version
+Print the Asmond version and exit.
+.TP
+.B -h, --help
+Show command-line help and exit.
+.TP
+.BI -i " seconds" ", --interval " seconds
+Set the sample interval in seconds. Values are clamped to Asmond's supported
+range.
+.TP
+.BI --history " samples"
+Set how many samples are kept for graphs.
+.TP
+.BI -t " theme" ", --theme " theme
+Choose a color theme. Available themes are:
+.BR classic ,
+.BR matrix ,
+.BR solar ,
+.BR mono ,
+.BR nord ,
+.BR dracula ,
+.BR ocean
+and
+.BR ember .
+.TP
+.BI --layout " layout"
+Choose the dashboard layout.
+.I layout
+may be
+.BR full ,
+.BR compact ,
+.B focus
+or
+.BR custom .
+The
+.B focus
+layout is the combined power and thermal view.
+The
+.B custom
+layout starts from the full grid and can be edited with Tailor mode
+.RB ( T ).
+.TP
+.B --show-io
+Show the compact disk/network I/O panel on startup.
+.TP
+.B --mock
+Run with generated demo data instead of live
+.BR powermetrics (1)
+data. This is useful for checking the interface without elevated telemetry.
+.TP
+.B --remove-settings
+Remove the saved user settings file and exit.
+.TP
+.B --config-path
+Print the settings file path and exit.
+.TP
+.B --allow-root-ui
+Allow the full terminal UI to run as root. This is disabled by default; normal
+interactive use should run
+.B asmond
+as the user and let Asmond elevate only
+.BR powermetrics (1).
+.SH COMMANDS
+.TP
+.B probe
+Print one parsed
+.BR powermetrics (1)
+sample and exit.
+.TP
+.B probe --raw
+Print one parsed sample and then list flattened raw plist keys and values. This
+helps when checking which counters a macOS version exposes. The output is not
+anonymized; use
+.B report
+for public support output.
+.TP
+.B doctor
+Check local dependencies and data sources, including macOS architecture,
+Python version, required system commands, settings path writability and cached
+sudo state. The command does not prompt for sudo.
+.TP
+.B doctor --json
+Print diagnostics as JSON.
+.TP
+.B doctor --live
+Also try one live
+.BR powermetrics (1)
+sample when sudo is already cached.
+.TP
+.B report
+Print an anonymized support report in Markdown. The report includes system
+version, diagnostics and non-sensitive memory, battery and USB-C/MagSafe
+summary data.
+.TP
+.B report --json
+Print the support report as JSON.
+.TP
+.B report --live
+Include one live
+.BR powermetrics (1)
+sample. This may prompt for sudo.
+.SH INTERACTIVE KEYS
+.TP
+.B q
+Quit.
+.TP
+.B ? / h
+Toggle the help overlay.
+.TP
+.B m
+Toggle the settings menu.
+.TP
+.B t
+Cycle the color theme.
+.TP
+.B T
+Toggle Tailor mode for the
+.B custom
+layout. Numbered slots can be selected with
+.B 1
+through
+.B 7
+and edited in a small slot menu.
+.TP
+.B + / -
+Change and apply the sample interval.
+.TP
+.B r
+Reset power graph history and peak values.
+.TP
+.B v
+Cycle the layout preset:
+.BR full ,
+.BR compact ,
+.B focus
+or
+.BR custom .
+.TP
+.B d
+Show or hide the disk/network I/O panel.
+.TP
+.B i / o
+Cycle the upper and lower disk/network graph sources.
+.TP
+.B L
+Toggle CPU/GPU average rows versus average graph view.
+.TP
+.B b
+Toggle the full-layout charge panel between Battery and USB-C/MagSafe.
+.TP
+.B S C G A
+Select SoC, CPU, GPU or ANE/NPU for the upper power graph.
+.TP
+.B s c g a
+Select SoC, CPU, GPU or ANE/NPU for the lower power graph.
+.TP
+.B u / n
+Cycle the upper and lower power graph sources.
+.TP
+.B p
+Cycle the process panel:
+.BR hidden ,
+.B left
+or
+.BR right .
+.TP
+.B Up / Down
+Select a process when the process panel is visible.
+.TP
+.B Left / Right
+Change process sorting between CPU, GPU, RAM, PID and name.
+.TP
+.B k
+Mark the selected process; press
+.B k
+again during the confirmation window to send
+.BR TERM .
+.SH SETTINGS MENU
+In the settings menu, use
+.B Up
+and
+.B Down
+or
+.B Tab
+to move, use
+.B Left
+and
+.B Right
+or
+.B Enter
+to change a value, press
+.B s
+to save and press
+.B Esc
+to close.
+.SH FILES
+.TP
+.I ~/Library/Application Support/Asmond/settings.json
+Saved UI settings, including theme, interval, layout, custom slots, graph
+sources, process panel mode and alert thresholds.
+.PP
+If Asmond is explicitly launched through
+.BR sudo (8)
+for a non-dashboard command, the settings path is resolved through
+.B SUDO_USER
+so the file still belongs to the real user.
+.SH NOTES
+Asmond prefers exposed macOS counters over estimates. Some counters are not
+publicly available on every system or macOS version. Missing values are shown as
+unavailable instead of being invented.
+.PP
+Intel Mac support is experimental and intentionally conservative. On tested
+hardware Asmond can read a smaller set of Intel
+.BR powermetrics (1)
+counters such as package/CPU/iGPU power, CPU/GPU load and clocks. Temperature
+sensors, fan speed, battery and USB-C charging telemetry may be unavailable
+depending on hardware and macOS.
+.PP
+Per-process GPU percentage is a legacy, best-effort path. It uses
+.B powermetrics --show-process-gpu
+when the process panel is visible, but Apple documents this as available only on
+certain hardware. macOS exposes this as GPU time rather than per-app GPU power.
+Current tested Apple Silicon/macOS builds may omit the GPU column from plist
+output or report only zeroes in text output, so Asmond falls back to parsing the
+.B GPU ms/s
+text column when useful and hides the process GPU column when the counter is
+unavailable.
+.PP
+USB-C and MagSafe charge information is decoded from the
+.B AppleSmartBattery
+and
+.B AppleHPMInterface
+IOKit trees. Live voltage, current and wattage prefer measured telemetry when
+available and fall back to negotiated adapter or USB-PD values.
+.PP
+Memory bandwidth support is best-effort and depends on whether
+.BR powermetrics (1)
+exposes legacy
+.B bandwidth_counters
+fields on the local system.
+.SH EXIT STATUS
+.TP
+.B 0
+The command completed successfully.
+.TP
+.B non-zero
+An error occurred, for example missing
+.BR powermetrics (1)
+access or a failed probe command.
+.SH EXAMPLES
+.TP
+Start the dashboard:
+.B asmond
+.TP
+Start with a short sample interval:
+.B asmond -i 0.2
+.TP
+Use the compact layout and Nord theme:
+.B asmond --layout compact --theme nord
+.TP
+Show one parsed live sample:
+.B asmond probe
+.TP
+Inspect raw exposed plist keys and values:
+.B asmond probe --raw
+.TP
+Check local data sources:
+.B asmond doctor
+.TP
+Create an anonymized support report:
+.B asmond report
+.TP
+Create a report with one live powermetrics sample:
+.B asmond report --live
+.TP
+Remove saved settings:
+.B asmond --remove-settings
+.SH SEE ALSO
+.BR powermetrics (1),
+.BR top (1),
+.BR vm_stat (1),
+.BR ioreg (8),
+.BR sudo (8)
