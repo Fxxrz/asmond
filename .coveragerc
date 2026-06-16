@@ -1,0 +1,13 @@
+[run]
+source =
+    asmond
+    asmond_formatting
+    asmond_metrics_memory
+    asmond_models
+    asmond_powermetrics
+    asmond_process
+    asmond_settings
+
+[report]
+show_missing = True
+skip_covered = False
