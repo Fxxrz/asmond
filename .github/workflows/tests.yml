@@ -1,0 +1,66 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python (GitHub)
+        if: ${{ env.FORGEJO_ACTIONS != 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up Python (Forgejo)
+        if: ${{ env.FORGEJO_ACTIONS == 'true' }}
+        run: |
+          : "${FORGEJO_UV:?FORGEJO_UV must point to uv on the Forgejo runner}"
+          "$FORGEJO_UV" python install "${{ matrix.python-version }}"
+          python_path="$("$FORGEJO_UV" python find "${{ matrix.python-version }}")"
+          python_env="$RUNNER_TEMP/forgejo-python-${{ matrix.python-version }}"
+          "$FORGEJO_UV" venv --seed --python "$python_path" "$python_env"
+          echo "$python_env/bin" >> "$GITHUB_PATH"
+          "$python_env/bin/python3" --version
+      - name: Syntax check
+        run: |
+          python3 -m py_compile \
+            asmond.py \
+            asmond_cpu.py \
+            asmond_models.py \
+            asmond_formatting.py \
+            asmond_metrics_memory.py \
+            asmond_process.py \
+            asmond_settings.py \
+            asmond_system.py \
+            asmond_powermetrics.py \
+            test_asmond.py
+      - name: Unit tests
+        run: python3 -m unittest -v
+      - name: Coverage gate
+        if: ${{ matrix.python-version == '3.14' }}
+        run: |
+          python3 -m pip install -r requirements-dev.txt
+          python3 -m ruff check .
+          python3 -m coverage run -m unittest
+          python3 -m coverage report
+      - name: Install-layout smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          cp asmond.py asmond_*.py "$tmpdir/"
+          cd /tmp
+          python3 "$tmpdir/asmond.py" --version
+          python3 "$tmpdir/asmond.py" report --mock --json >/tmp/asmond-report.json
