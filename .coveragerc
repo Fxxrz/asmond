@@ -1,0 +1,17 @@
+[run]
+branch = True
+source =
+    asmond
+    asmond_cpu
+    asmond_formatting
+    asmond_metrics_memory
+    asmond_models
+    asmond_powermetrics
+    asmond_process
+    asmond_settings
+    asmond_system
+
+[report]
+show_missing = True
+skip_covered = False
+fail_under = 50
