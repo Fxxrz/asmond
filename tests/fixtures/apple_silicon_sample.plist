@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>thermal_pressure</key>
+  <string>Nominal</string>
+  <key>processor</key>
+  <dict>
+    <key>cpu_energy</key>
+    <integer>250</integer>
+    <key>gpu_energy</key>
+    <integer>100</integer>
+    <key>ane_energy</key>
+    <integer>0</integer>
+    <key>combined_power</key>
+    <real>1.25</real>
+    <key>clusters</key>
+    <array>
+      <dict>
+        <key>name</key>
+        <string>E Cluster</string>
+        <key>idle_ratio</key>
+        <real>0.75</real>
+        <key>freq_hz</key>
+        <integer>1800000000</integer>
+        <key>cpus</key>
+        <array>
+          <dict>
+            <key>cpu</key>
+            <integer>0</integer>
+            <key>idle_ratio</key>
+            <real>0.80</real>
+            <key>freq_hz</key>
+            <integer>1700000000</integer>
+          </dict>
+          <dict>
+            <key>cpu</key>
+            <integer>1</integer>
+            <key>idle_ratio</key>
+            <real>0.70</real>
+            <key>freq_hz</key>
+            <integer>1800000000</integer>
+          </dict>
+        </array>
+      </dict>
+      <dict>
+        <key>name</key>
+        <string>P Cluster</string>
+        <key>idle_ratio</key>
+        <real>0.50</real>
+        <key>freq_hz</key>
+        <integer>3200000000</integer>
+        <key>cpus</key>
+        <array>
+          <dict>
+            <key>cpu</key>
+            <integer>6</integer>
+            <key>idle_ratio</key>
+            <real>0.45</real>
+            <key>freq_hz</key>
+            <integer>3100000000</integer>
+          </dict>
+          <dict>
+            <key>cpu</key>
+            <integer>7</integer>
+            <key>idle_ratio</key>
+            <real>0.55</real>
+            <key>freq_hz</key>
+            <integer>3200000000</integer>
+          </dict>
+        </array>
+      </dict>
+    </array>
+  </dict>
+  <key>gpu</key>
+  <dict>
+    <key>idle_ratio</key>
+    <real>0.90</real>
+    <key>freq_hz</key>
+    <integer>600000000</integer>
+  </dict>
+  <key>thermal_sensors</key>
+  <array>
+    <dict>
+      <key>name</key>
+      <string>PMU tdie0</string>
+      <key>temperature</key>
+      <real>36.2</real>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>PMU tdie1</string>
+      <key>current_value</key>
+      <real>38.4</real>
+    </dict>
+  </array>
+  <key>bandwidth_counters</key>
+  <array>
+    <dict>
+      <key>name</key>
+      <string>CPU fabric</string>
+      <key>value</key>
+      <integer>1500000000</integer>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>DRAM total</string>
+      <key>value</key>
+      <integer>3000000000</integer>
+    </dict>
+  </array>
+</dict>
+</plist>
