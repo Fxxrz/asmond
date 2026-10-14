@@ -1,0 +1,98 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python (GitHub)
+        if: ${{ env.FORGEJO_ACTIONS != 'true' }}
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up Python (Forgejo)
+        if: ${{ env.FORGEJO_ACTIONS == 'true' }}
+        run: |
+          : "${FORGEJO_UV:?FORGEJO_UV must point to uv on the Forgejo runner}"
+          "$FORGEJO_UV" python install "${{ matrix.python-version }}"
+          python_path="$("$FORGEJO_UV" python find "${{ matrix.python-version }}")"
+          python_env="$RUNNER_TEMP/forgejo-python-${{ matrix.python-version }}"
+          "$FORGEJO_UV" venv --seed --python "$python_path" "$python_env"
+          echo "$python_env/bin" >> "$GITHUB_PATH"
+          "$python_env/bin/python3" --version
+      - name: Syntax check
+        run: |
+          python3 -m py_compile \
+            asmond.py \
+            asmond_cpu.py \
+            asmond_models.py \
+            asmond_formatting.py \
+            asmond_metrics_memory.py \
+            asmond_process.py \
+            asmond_settings.py \
+            asmond_smc.py \
+            asmond_system.py \
+            asmond_powermetrics.py \
+            test_asmond.py
+      - name: Unit tests
+        run: python3 -m unittest -v
+      - name: Coverage gate
+        if: ${{ matrix.python-version == '3.14' }}
+        run: |
+          python3 -m pip install -r requirements-dev.txt
+          python3 -m ruff check .
+          python3 -m coverage run -m unittest
+          python3 -m coverage report
+      - name: Intel host smoke test (Forgejo)
+        if: ${{ env.FORGEJO_ACTIONS == 'true' && matrix.python-version == '3.14' }}
+        run: |
+          test "$(uname -m)" = "x86_64"
+          doctor_json="$RUNNER_TEMP/asmond-intel-doctor.json"
+          report_json="$RUNNER_TEMP/asmond-intel-report.json"
+          python3 asmond.py doctor --json >"$doctor_json"
+          python3 asmond.py report --json >"$report_json"
+          python3 - "$doctor_json" "$report_json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              doctor = json.load(handle)
+          with open(sys.argv[2], encoding="utf-8") as handle:
+              report = json.load(handle)
+
+          checks = {item["name"]: item for item in doctor["checks"]}
+          platform = checks["platform"]
+          assert platform["status"] == "warn", platform
+          assert "Intel" in platform["note"] and "x86_64" in platform["note"], platform
+          assert not [item for item in doctor["checks"] if item["status"] == "fail"], doctor
+
+          assert report["system"]["machine"] == "x86_64", report["system"]
+          snapshot = report["snapshot"]
+          assert snapshot["memory"]["total"] != "n/a", snapshot["memory"]
+          assert snapshot["battery"]["supported"] is False, snapshot["battery"]
+          assert snapshot["battery"]["state"] == "unsupported", snapshot["battery"]
+          assert snapshot["usb_c"]["supported"] is False, snapshot["usb_c"]
+          assert snapshot["usb_c"]["state"] == "unsupported", snapshot["usb_c"]
+          PY
+      - name: Install-layout smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          cp asmond.py asmond_*.py "$tmpdir/"
+          cd /tmp
+          python3 "$tmpdir/asmond.py" --version
+          python3 "$tmpdir/asmond.py" report --mock --json >/tmp/asmond-report.json
