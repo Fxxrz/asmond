@@ -1,0 +1,41 @@
+{
+  "source": "Minimized native MacBookPro14,3 idle capture, macOS 13.7.8; raw identifiers excluded. User confirms the high second-fan actual RPM independently in Macs Fan Control.",
+  "powermetrics": {
+    "elapsed_ns": 1028454559,
+    "processor": {
+      "package_watts": 3.73473,
+      "packages": [{"perf_limit_reasons": ["CPU LIMIT ICCMAX/PL4/OTHER", "CPU LIMIT MAX_TURBO_LIMIT", "CPU LIMIT TURBO_ATTENUATION"]}]
+    },
+    "thermal_pressure": "Nominal",
+    "smc": {
+      "cpu_die": 44.34,
+      "cpu_die_power_target": 98.0,
+      "cpu_die_fan_target": 88.0,
+      "gpu_die": 35.0,
+      "gpu_die_power_target": 101.0,
+      "gpu_die_fan_target": 89.0,
+      "fan": 7976.0,
+      "cpu_plimit": 0.0,
+      "gpu_plimit": 0.0,
+      "cpu_prochot": false,
+      "smc_prochot": false
+    }
+  },
+  "adapter_only": {
+    "ExternalConnected": true,
+    "IsCharging": true,
+    "BestAdapterIndex": 0,
+    "AdapterDetails": {
+      "AdapterVoltage": 20000,
+      "Current": 3250,
+      "Watts": 65,
+      "IsWireless": false,
+      "PMUConfiguration": 1572
+    }
+  },
+  "smc_samples": [
+    {"FNum": 2, "F0Ac": 2154, "F0Mn": 2160, "F0Mx": 5927, "F0Tg": 2160, "F1Ac": 7973, "F1Mn": 2000, "F1Mx": 5489, "F1Tg": 2000},
+    {"FNum": 2, "F0Ac": 2154, "F0Mn": 2160, "F0Mx": 5927, "F0Tg": 2160, "F1Ac": 7972, "F1Mn": 2000, "F1Mx": 5489, "F1Tg": 2000},
+    {"FNum": 2, "F0Ac": 2164, "F0Mn": 2160, "F0Mx": 5927, "F0Tg": 2160, "F1Ac": 7972, "F1Mn": 2000, "F1Mx": 5489, "F1Tg": 2000}
+  ]
+}
