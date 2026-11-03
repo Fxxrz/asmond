@@ -1,0 +1,40 @@
+{
+  "source": "Minimized, anonymized fields from the user-provided M2 Max capture, 2026-10-23. SMC temperature keys are unassigned comparison values.",
+  "brand": "Apple M2 Max",
+  "performance_cores": 8,
+  "efficiency_cores": 4,
+  "battery": {
+    "ExternalConnected": true,
+    "IsCharging": false,
+    "BestAdapterIndex": 0,
+    "AdapterDetails": {"Watts": 100, "AdapterVoltage": 20000, "Current": 5000},
+    "PortControllerInfo": [
+      {"PortControllerActiveContractRdo": 0, "PortControllerMaxPower": 100000},
+      {"PortControllerActiveContractRdo": 1401379286},
+      {"PortControllerActiveContractRdo": 0},
+      {"PortControllerActiveContractRdo": 0}
+    ]
+  },
+  "controllers": [
+    {"IOObjectClass": "AppleTCControllerType10", "PortDescription": "Port-USB-C@1", "PortNumber": 1, "PortType": 2, "PortTypeDescription": "USB-C", "ConnectionActive": true, "TransportsActive": ["CC", "USB3", "USB2"]},
+    {"IOObjectClass": "AppleTCControllerType10", "PortDescription": "Port-USB-C@2", "PortNumber": 2, "PortType": 2, "PortTypeDescription": "USB-C", "ConnectionActive": false, "TransportsActive": []},
+    {"IOObjectClass": "AppleTCControllerType10", "PortDescription": "Port-USB-C@3", "PortNumber": 3, "PortType": 2, "PortTypeDescription": "USB-C", "ConnectionActive": true, "TransportsActive": ["CC", "USB3", "USB2", "DisplayPort"]},
+    {"IOObjectClass": "AppleTCControllerType11", "PortDescription": "Port-MagSafe 3@1", "PortNumber": 1, "PortType": 17, "PortTypeDescription": "MagSafe 3", "ConnectionActive": false, "TransportsActive": []}
+  ],
+  "cables": [
+    {"ParentPortType": 2, "ParentPortNumber": 1, "ParentBuiltInPortType": 2, "ParentBuiltInPortNumber": 1, "Specification Revision": 3, "Metadata": {"VDOs": [408952981, 2438, 822084368, 285745218], "Vendor ID": 8341, "Product ID": 12544}}
+  ],
+  "usb_ports": [
+    {"UsbIOPort": "IOService:/Port-USB-C@1/USB3", "locationID": 2097152},
+    {"UsbIOPort": "IOService:/Port-USB-C@3/USB3", "locationID": 35651584}
+  ],
+  "usb_devices": [
+    {"locationID": 2097152, "UsbLinkSpeed": 10000000000},
+    {"locationID": 35651584, "UsbLinkSpeed": 5000000000}
+  ],
+  "smc_samples": [
+    {"FNum": 2, "F0Ac": 2310.49169921875, "F1Ac": 2498.889404296875, "F0Tg": 2317.0, "F1Tg": 2502.0, "TCMb": 58.829, "TCMz": 61.119, "Tp01": 6.7, "Tp1A": 0.0},
+    {"FNum": 2, "F0Ac": 2303.793701171875, "F1Ac": 2525.8193359375, "F0Tg": 2317.0, "F1Tg": 2502.0, "TCMb": 70.763, "TCMz": 83.378, "Tp01": 70.763, "Tp1A": 0.0},
+    {"FNum": 2, "F0Ac": 2303.21875, "F1Ac": 2512.47509765625, "F0Tg": 2317.0, "F1Tg": 2502.0, "TCMb": 67.169, "TCMz": 84.472, "Tp01": 64.291, "Tp1A": 0.0}
+  ]
+}

@@ -1,0 +1,6 @@
+# Asmond has no third-party Python package dependencies.
+#
+# Runtime requirements:
+# - macOS on Apple Silicon, or an Intel Mac for experimental support
+# - Python 3.10+
+# - sudo access for Apple's powermetrics
