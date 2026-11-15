@@ -1,0 +1,533 @@
+{
+  "evidence": "Read-only Intel Mini IOUSBHostDevice -l capture 2026-11-04. USB and physical storage names/capacities only. Whole=True RAID/APFS descendants are intentionally retained to prevent assigning aggregate volumes as per-device capacity. No serials, volume names, UUIDs or mount paths. The apple_silicon section is an additional real M4 attachment; separate negative/mapping mutations in tests are explicitly synthetic.",
+  "usb_ports": [
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 2,
+      "locationID": 1048576
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 1,
+      "locationID": 2097152
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 4,
+      "locationID": 17825792
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 3,
+      "locationID": 18874368
+    }
+  ],
+  "usb_devices": [
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USB Product Name": "Ugreen Storage Device",
+      "USB Vendor Name": "Ugreen",
+      "USBSpeed": 5,
+      "locationID": 1048576,
+      "IORegistryEntryChildren": [
+        {
+          "IOObjectClass": "AppleUSBHostLegacyClient"
+        },
+        {
+          "IOObjectClass": "IOUSBHostInterface",
+          "USB Product Name": "Ugreen Storage Device",
+          "USB Vendor Name": "Ugreen",
+          "USBSpeed": 5,
+          "locationID": 1048576,
+          "IORegistryEntryChildren": [
+            {
+              "IOObjectClass": "IOUSBMassStorageInterfaceNub",
+              "USB Product Name": "Ugreen Storage Device",
+              "locationID": 1048576,
+              "IORegistryEntryChildren": [
+                {
+                  "IOObjectClass": "IOUSBMassStorageDriverNub",
+                  "USB Product Name": "Ugreen Storage Device",
+                  "IORegistryEntryChildren": [
+                    {
+                      "IOObjectClass": "IOUSBMassStorageUASDriver",
+                      "IORegistryEntryChildren": [
+                        {
+                          "IOObjectClass": "IOSCSITargetDevice",
+                          "IORegistryEntryChildren": [
+                            {
+                              "IOObjectClass": "IOSCSIHierarchicalLogicalUnit",
+                              "IORegistryEntryChildren": [
+                                {
+                                  "IOObjectClass": "IOSCSIPeripheralDeviceType00",
+                                  "IORegistryEntryChildren": [
+                                    {
+                                      "IOObjectClass": "IOBlockStorageServices",
+                                      "Device Characteristics": {
+                                        "Medium Type": "Solid State",
+                                        "Product Name": " SNVS500G",
+                                        "Vendor Name": "KINGSTON"
+                                      },
+                                      "IORegistryEntryChildren": [
+                                        {
+                                          "IOObjectClass": "IOBlockStorageDriver",
+                                          "IORegistryEntryChildren": [
+                                            {
+                                              "IOObjectClass": "IOMedia",
+                                              "Size": 500107862016,
+                                              "Whole": true,
+                                              "IORegistryEntryChildren": [
+                                                {
+                                                  "IOObjectClass": "IOGUIDPartitionScheme",
+                                                  "IORegistryEntryChildren": [
+                                                    {
+                                                      "IOObjectClass": "IOMedia",
+                                                      "Size": 499763888128,
+                                                      "Whole": false,
+                                                      "IORegistryEntryChildren": [
+                                                        {
+                                                          "IOObjectClass": "AppleRAIDMember",
+                                                          "IORegistryEntryChildren": [
+                                                            {
+                                                              "IOObjectClass": "AppleRAIDStripeSet",
+                                                              "IORegistryEntryChildren": [
+                                                                {
+                                                                  "IOObjectClass": "IOMedia",
+                                                                  "Size": 999527743488,
+                                                                  "Whole": true
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "IOObjectClass": "AppleUSBHostCompositeDevice"
+        },
+        {
+          "IOObjectClass": "AppleUSBHostDeviceUserClient"
+        }
+      ]
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USB Product Name": "Ugreen Storage Device",
+      "USB Vendor Name": "Ugreen",
+      "USBSpeed": 5,
+      "locationID": 2097152,
+      "IORegistryEntryChildren": [
+        {
+          "IOObjectClass": "AppleUSBHostLegacyClient"
+        },
+        {
+          "IOObjectClass": "IOUSBHostInterface",
+          "USB Product Name": "Ugreen Storage Device",
+          "USB Vendor Name": "Ugreen",
+          "USBSpeed": 5,
+          "locationID": 2097152,
+          "IORegistryEntryChildren": [
+            {
+              "IOObjectClass": "IOUSBMassStorageInterfaceNub",
+              "USB Product Name": "Ugreen Storage Device",
+              "locationID": 2097152,
+              "IORegistryEntryChildren": [
+                {
+                  "IOObjectClass": "IOUSBMassStorageDriverNub",
+                  "USB Product Name": "Ugreen Storage Device",
+                  "IORegistryEntryChildren": [
+                    {
+                      "IOObjectClass": "IOUSBMassStorageUASDriver",
+                      "IORegistryEntryChildren": [
+                        {
+                          "IOObjectClass": "IOSCSITargetDevice",
+                          "IORegistryEntryChildren": [
+                            {
+                              "IOObjectClass": "IOSCSIHierarchicalLogicalUnit",
+                              "IORegistryEntryChildren": [
+                                {
+                                  "IOObjectClass": "IOSCSIPeripheralDeviceType00",
+                                  "IORegistryEntryChildren": [
+                                    {
+                                      "IOObjectClass": "IOBlockStorageServices",
+                                      "Device Characteristics": {
+                                        "Medium Type": "Solid State",
+                                        "Product Name": "SSD 970 EVO Plus",
+                                        "Vendor Name": "Samsung"
+                                      },
+                                      "IORegistryEntryChildren": [
+                                        {
+                                          "IOObjectClass": "IOBlockStorageDriver",
+                                          "IORegistryEntryChildren": [
+                                            {
+                                              "IOObjectClass": "IOMedia",
+                                              "Size": 1000204886016,
+                                              "Whole": true
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "IOObjectClass": "AppleUSBHostCompositeDevice"
+        },
+        {
+          "IOObjectClass": "AppleUSBHostDeviceUserClient"
+        }
+      ]
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USB Product Name": "Ugreen Storage Device",
+      "USB Vendor Name": "Ugreen",
+      "USBSpeed": 5,
+      "locationID": 17825792,
+      "IORegistryEntryChildren": [
+        {
+          "IOObjectClass": "AppleUSBHostLegacyClient"
+        },
+        {
+          "IOObjectClass": "IOUSBHostInterface",
+          "USB Product Name": "Ugreen Storage Device",
+          "USB Vendor Name": "Ugreen",
+          "USBSpeed": 5,
+          "locationID": 17825792,
+          "IORegistryEntryChildren": [
+            {
+              "IOObjectClass": "IOUSBMassStorageInterfaceNub",
+              "USB Product Name": "Ugreen Storage Device",
+              "locationID": 17825792,
+              "IORegistryEntryChildren": [
+                {
+                  "IOObjectClass": "IOUSBMassStorageDriverNub",
+                  "USB Product Name": "Ugreen Storage Device",
+                  "IORegistryEntryChildren": [
+                    {
+                      "IOObjectClass": "IOUSBMassStorageUASDriver",
+                      "IORegistryEntryChildren": [
+                        {
+                          "IOObjectClass": "IOSCSITargetDevice",
+                          "IORegistryEntryChildren": [
+                            {
+                              "IOObjectClass": "IOSCSIHierarchicalLogicalUnit",
+                              "IORegistryEntryChildren": [
+                                {
+                                  "IOObjectClass": "IOSCSIPeripheralDeviceType00",
+                                  "IORegistryEntryChildren": [
+                                    {
+                                      "IOObjectClass": "IOBlockStorageServices",
+                                      "Device Characteristics": {
+                                        "Medium Type": "Solid State",
+                                        "Product Name": "SSD",
+                                        "Vendor Name": "INTENSO"
+                                      },
+                                      "IORegistryEntryChildren": [
+                                        {
+                                          "IOObjectClass": "IOBlockStorageDriver",
+                                          "IORegistryEntryChildren": [
+                                            {
+                                              "IOObjectClass": "IOMedia",
+                                              "Size": 1024209543168,
+                                              "Whole": true
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "IOObjectClass": "AppleUSBHostCompositeDevice"
+        },
+        {
+          "IOObjectClass": "AppleUSBHostDeviceUserClient"
+        }
+      ]
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USB Product Name": "Ugreen Storage Device",
+      "USB Vendor Name": "Ugreen",
+      "USBSpeed": 5,
+      "locationID": 18874368,
+      "IORegistryEntryChildren": [
+        {
+          "IOObjectClass": "AppleUSBHostLegacyClient"
+        },
+        {
+          "IOObjectClass": "IOUSBHostInterface",
+          "USB Product Name": "Ugreen Storage Device",
+          "USB Vendor Name": "Ugreen",
+          "USBSpeed": 5,
+          "locationID": 18874368,
+          "IORegistryEntryChildren": [
+            {
+              "IOObjectClass": "IOUSBMassStorageInterfaceNub",
+              "USB Product Name": "Ugreen Storage Device",
+              "locationID": 18874368,
+              "IORegistryEntryChildren": [
+                {
+                  "IOObjectClass": "IOUSBMassStorageDriverNub",
+                  "USB Product Name": "Ugreen Storage Device",
+                  "IORegistryEntryChildren": [
+                    {
+                      "IOObjectClass": "IOUSBMassStorageUASDriver",
+                      "IORegistryEntryChildren": [
+                        {
+                          "IOObjectClass": "IOSCSITargetDevice",
+                          "IORegistryEntryChildren": [
+                            {
+                              "IOObjectClass": "IOSCSIHierarchicalLogicalUnit",
+                              "IORegistryEntryChildren": [
+                                {
+                                  "IOObjectClass": "IOSCSIPeripheralDeviceType00",
+                                  "IORegistryEntryChildren": [
+                                    {
+                                      "IOObjectClass": "IOBlockStorageServices",
+                                      "Device Characteristics": {
+                                        "Medium Type": "Solid State",
+                                        "Product Name": " SNVS500G",
+                                        "Vendor Name": "KINGSTON"
+                                      },
+                                      "IORegistryEntryChildren": [
+                                        {
+                                          "IOObjectClass": "IOBlockStorageDriver",
+                                          "IORegistryEntryChildren": [
+                                            {
+                                              "IOObjectClass": "IOMedia",
+                                              "Size": 500107862016,
+                                              "Whole": true,
+                                              "IORegistryEntryChildren": [
+                                                {
+                                                  "IOObjectClass": "IOGUIDPartitionScheme",
+                                                  "IORegistryEntryChildren": [
+                                                    {
+                                                      "IOObjectClass": "IOMedia",
+                                                      "Size": 499763888128,
+                                                      "Whole": false,
+                                                      "IORegistryEntryChildren": [
+                                                        {
+                                                          "IOObjectClass": "AppleRAIDMember",
+                                                          "IORegistryEntryChildren": [
+                                                            {
+                                                              "IOObjectClass": "AppleRAIDStripeSet",
+                                                              "IORegistryEntryChildren": [
+                                                                {
+                                                                  "IOObjectClass": "IOMedia",
+                                                                  "Size": 999527743488,
+                                                                  "Whole": true
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "IOObjectClass": "AppleUSBHostCompositeDevice"
+        },
+        {
+          "IOObjectClass": "AppleUSBHostDeviceUserClient"
+        }
+      ]
+    }
+  ],
+  "apple_silicon": {
+    "evidence": "Live base-M4 USB-C 2 attachment on 2026-11-04; Ugreen enclosure, MSI M470 PRO 1TB, IOMedia Size 1000204886016; no cable identity published for this attachment. USB and physical media metadata only.",
+    "hpm_items": [
+      {
+        "ConnectionActive": false,
+        "PortNumber": 1,
+        "PortType": 2,
+        "TransportsActive": []
+      },
+      {
+        "ConnectionActive": true,
+        "PortNumber": 2,
+        "PortType": 2,
+        "TransportsActive": [
+          "CC",
+          "USB3"
+        ]
+      },
+      {
+        "ConnectionActive": false,
+        "PortNumber": 1,
+        "PortType": 17,
+        "TransportsActive": []
+      }
+    ],
+    "usb_ports": [
+      {
+        "IOObjectClass": "AppleUSB20XHCIARMPort",
+        "UsbIOPort": "IOService:/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/nub-spmi-a0@88908000/AppleSPMIController/hpm0@C/AppleHPMARMSPMI/AppleHPMDeviceHALType3@C/Port-USB-C@1",
+        "locationID": 1048576
+      },
+      {
+        "IOObjectClass": "AppleUSB30XHCIARMPort",
+        "UsbIOPort": "IOService:/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/nub-spmi-a0@88908000/AppleSPMIController/hpm0@C/AppleHPMARMSPMI/AppleHPMDeviceHALType3@C/Port-USB-C@1",
+        "locationID": 2097152
+      },
+      {
+        "IOObjectClass": "AppleUSB20XHCIARMPort",
+        "UsbIOPort": "IOService:/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/nub-spmi-a0@88908000/AppleSPMIController/hpm1@A/AppleHPMARMSPMI/AppleHPMDeviceHALType3@A/Port-USB-C@2",
+        "locationID": 17825792
+      },
+      {
+        "IOObjectClass": "AppleUSB30XHCIARMPort",
+        "UsbIOPort": "IOService:/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/nub-spmi-a0@88908000/AppleSPMIController/hpm1@A/AppleHPMARMSPMI/AppleHPMDeviceHALType3@A/Port-USB-C@2",
+        "locationID": 18874368
+      }
+    ],
+    "usb_devices": [
+      {
+        "IOObjectClass": "IOUSBHostDevice",
+        "USB Product Name": "Ugreen Storage Device",
+        "USB Vendor Name": "Ugreen",
+        "USBSpeed": 5,
+        "UsbLinkSpeed": 10000000000,
+        "locationID": 18874368,
+        "IORegistryEntryChildren": [
+          {
+            "IOObjectClass": "AppleUSBHostCompositeDevice"
+          },
+          {
+            "IOObjectClass": "AppleUSBHostDeviceUserClient"
+          },
+          {
+            "IOObjectClass": "IOUSBHostInterface",
+            "USB Product Name": "Ugreen Storage Device",
+            "USB Vendor Name": "Ugreen",
+            "USBSpeed": 5,
+            "locationID": 18874368,
+            "IORegistryEntryChildren": [
+              {
+                "IOObjectClass": "IOUSBMassStorageInterfaceNub",
+                "USB Product Name": "Ugreen Storage Device",
+                "locationID": 18874368,
+                "IORegistryEntryChildren": [
+                  {
+                    "IOObjectClass": "IOUSBMassStorageDriverNub",
+                    "USB Product Name": "Ugreen Storage Device",
+                    "IORegistryEntryChildren": [
+                      {
+                        "IOObjectClass": "IOUSBMassStorageUASDriver",
+                        "IORegistryEntryChildren": [
+                          {
+                            "IOObjectClass": "IOSCSITargetDevice",
+                            "IORegistryEntryChildren": [
+                              {
+                                "IOObjectClass": "IOSCSIHierarchicalLogicalUnit",
+                                "IORegistryEntryChildren": [
+                                  {
+                                    "IOObjectClass": "IOSCSIPeripheralDeviceType00",
+                                    "IORegistryEntryChildren": [
+                                      {
+                                        "IOObjectClass": "IOBlockStorageServices",
+                                        "Device Characteristics": {
+                                          "Medium Type": "Solid State",
+                                          "Product Name": " PRO 1TB",
+                                          "Vendor Name": "MSI M470"
+                                        },
+                                        "IORegistryEntryChildren": [
+                                          {
+                                            "IOObjectClass": "IOBlockStorageDriver",
+                                            "IORegistryEntryChildren": [
+                                              {
+                                                "IOObjectClass": "IOMedia",
+                                                "Size": 1000204886016,
+                                                "Whole": true
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
