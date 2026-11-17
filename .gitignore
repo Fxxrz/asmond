@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.coverage
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.asmond.json
+# Private recordings must not enter source exports if the repository is chosen.
+asmond-record-*/
