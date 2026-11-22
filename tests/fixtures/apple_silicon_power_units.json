@@ -1,0 +1,62 @@
+[
+  {
+    "elapsed_ns": 1009275666,
+    "processor": {
+      "cpu_energy": 5622,
+      "gpu_energy": 30,
+      "ane_energy": 0,
+      "cpu_power": 5570.33,
+      "gpu_power": 29.7243,
+      "ane_power": 0.0,
+      "combined_power": 5600.06
+    }
+  },
+  {
+    "elapsed_ns": 1014377125,
+    "processor": {
+      "cpu_energy": 5534,
+      "gpu_energy": 45,
+      "ane_energy": 0,
+      "cpu_power": 5455.56,
+      "gpu_power": 44.3622,
+      "ane_power": 0.0,
+      "combined_power": 5499.93
+    }
+  },
+  {
+    "elapsed_ns": 1014115458,
+    "processor": {
+      "cpu_energy": 4560,
+      "gpu_energy": 43,
+      "ane_energy": 0,
+      "cpu_power": 4496.53,
+      "gpu_power": 42.4015,
+      "ane_power": 0.0,
+      "combined_power": 4538.93
+    }
+  },
+  {
+    "elapsed_ns": 1014373666,
+    "processor": {
+      "cpu_energy": 5197,
+      "gpu_energy": 29,
+      "ane_energy": 0,
+      "cpu_power": 5123.36,
+      "gpu_power": 28.5891,
+      "ane_power": 0.0,
+      "combined_power": 5151.95
+    }
+  },
+  {
+    "elapsed_ns": 1014400708,
+    "processor": {
+      "cpu_energy": 5481,
+      "gpu_energy": 45,
+      "ane_energy": 0,
+      "cpu_power": 5403.19,
+      "gpu_power": 44.3612,
+      "ane_power": 0.0,
+      "combined_power": 5447.55
+    }
+  }
+]

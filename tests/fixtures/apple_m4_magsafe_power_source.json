@@ -1,0 +1,167 @@
+{
+  "description": "Reduced native base-M4 MagSafe input, 2026-11-12; anonymous battery controller/FED entries cannot identify physical ports. Power In.Active is false while the source has a winning option.",
+  "battery": {
+    "ExternalConnected": true,
+    "IsCharging": false,
+    "AdapterDetails": {
+      "AdapterVoltage": 12000,
+      "Current": 2480,
+      "Watts": 30
+    },
+    "PortControllerInfo": [
+      {
+        "PortControllerActiveContractRdo": 0,
+        "PortControllerNPDOs": 0,
+        "PortControllerPortPDO": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "PortControllerActiveContractRdo": 0,
+        "PortControllerNPDOs": 0,
+        "PortControllerPortPDO": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "PortControllerActiveContractRdo": 1367712104,
+        "PortControllerNPDOs": 3,
+        "PortControllerPortPDO": [
+          134320424,
+          184617,
+          246008,
+          -925093322,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "FedDetails": [
+      {
+        "FedExternalConnected": 0
+      },
+      {
+        "FedExternalConnected": 0
+      },
+      {
+        "FedExternalConnected": 1
+      }
+    ]
+  },
+  "hpm": [
+    {
+      "ConnectionActive": false,
+      "PortDescription": "Port-USB-C@1",
+      "PortNumber": 1,
+      "PortType": 2,
+      "PortTypeDescription": "USB-C",
+      "TransportsActive": [],
+      "IORegistryEntryChildren": [
+        {
+          "Active": false,
+          "FeatureType": 3,
+          "IOObjectClass": "IOPortFeaturePowerIn",
+          "ParentBuiltInPortNumber": 1,
+          "ParentBuiltInPortType": 2,
+          "ParentPortNumber": 1,
+          "ParentPortType": 2
+        }
+      ]
+    },
+    {
+      "ConnectionActive": false,
+      "PortDescription": "Port-USB-C@2",
+      "PortNumber": 2,
+      "PortType": 2,
+      "PortTypeDescription": "USB-C",
+      "TransportsActive": [],
+      "IORegistryEntryChildren": [
+        {
+          "Active": false,
+          "FeatureType": 3,
+          "IOObjectClass": "IOPortFeaturePowerIn",
+          "ParentBuiltInPortNumber": 2,
+          "ParentBuiltInPortType": 2,
+          "ParentPortNumber": 2,
+          "ParentPortType": 2
+        }
+      ]
+    },
+    {
+      "ConnectionActive": true,
+      "PortDescription": "Port-MagSafe 3@1",
+      "PortNumber": 1,
+      "PortType": 17,
+      "PortTypeDescription": "MagSafe 3",
+      "TransportsActive": [
+        "CC"
+      ],
+      "IORegistryEntryChildren": [
+        {
+          "Active": false,
+          "FeatureType": 3,
+          "IOObjectClass": "IOPortFeaturePowerIn",
+          "ParentBuiltInPortNumber": 1,
+          "ParentBuiltInPortType": 17,
+          "ParentPortNumber": 1,
+          "ParentPortType": 17,
+          "IORegistryEntryChildren": [
+            {
+              "IOObjectClass": "IOPortFeaturePowerSource",
+              "ParentBuiltInPortNumber": 1,
+              "ParentBuiltInPortType": 17,
+              "ParentFeatureType": 3,
+              "ParentPortNumber": 1,
+              "ParentPortType": 17,
+              "WinningPowerSourceOption": {
+                "Class": "IOPortFeaturePowerSourceOptionFixed",
+                "Max Current (mA)": 2480,
+                "Max Power (mW)": 29760,
+                "Voltage (mV)": 12000
+              }
+            },
+            {
+              "IOObjectClass": "IOPortFeaturePowerSource",
+              "ParentBuiltInPortNumber": 1,
+              "ParentBuiltInPortType": 17,
+              "ParentFeatureType": 3,
+              "ParentPortNumber": 1,
+              "ParentPortType": 17
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

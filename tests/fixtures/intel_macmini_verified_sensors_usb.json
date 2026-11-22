@@ -1,0 +1,102 @@
+{
+  "evidence": "Read-only Macmini8,1 comparison 2026-11-04. Only sensor keys, model/CPU identity and USB link/counter properties retained; no device serials, app names or host identifiers. Sensor groups were independently matched against Macs Fan Control. USB bandwidth is the negotiated data link, never a cable rating or power measurement.",
+  "model": "Macmini8,1",
+  "cpu_brand": "Intel(R) Core(TM) i5-8500B CPU @ 3.00GHz",
+  "smc_values": {
+    "TC0F": 88.7421875,
+    "TC0P": 58.1875,
+    "TCXC": 83.640625,
+    "TCGC": 69.0,
+    "TC1C": 78.0,
+    "TC2C": 79.0,
+    "TC3C": 77.0,
+    "TC4C": 75.0,
+    "TC5C": 76.0,
+    "TC6C": 74.0,
+    "TC7C": -127.0,
+    "TC8C": -127.0,
+    "TW0P": 50.75,
+    "TPCD": 73.0,
+    "TM0P": 54.25
+  },
+  "usb_ports": [
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 2,
+      "link-error-count": 0,
+      "locationID": 1048576,
+      "port-statistics": {
+        "kPortStatConnectCount": 1,
+        "kPortStatEOF2ViolationCount": 0,
+        "kPortStatEnumerationFailureCount": 0,
+        "kPortStatOverCurrentCount": 0,
+        "kPortStatRemoteWakeCount": 0
+      },
+      "port-status": 5376
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 1,
+      "link-error-count": 0,
+      "locationID": 2097152,
+      "port-statistics": {
+        "kPortStatConnectCount": 1,
+        "kPortStatEOF2ViolationCount": 0,
+        "kPortStatEnumerationFailureCount": 0,
+        "kPortStatOverCurrentCount": 0,
+        "kPortStatRemoteWakeCount": 0
+      },
+      "port-status": 5376
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 4,
+      "link-error-count": 0,
+      "locationID": 17825792,
+      "port-statistics": {
+        "kPortStatConnectCount": 1,
+        "kPortStatEOF2ViolationCount": 0,
+        "kPortStatEnumerationFailureCount": 0,
+        "kPortStatOverCurrentCount": 0,
+        "kPortStatRemoteWakeCount": 0
+      },
+      "port-status": 5376
+    },
+    {
+      "IOObjectClass": "AppleUSB30XHCITypeCPort",
+      "UsbCPortNumber": 3,
+      "link-error-count": 0,
+      "locationID": 18874368,
+      "port-statistics": {
+        "kPortStatConnectCount": 1,
+        "kPortStatEOF2ViolationCount": 0,
+        "kPortStatEnumerationFailureCount": 0,
+        "kPortStatOverCurrentCount": 0,
+        "kPortStatRemoteWakeCount": 0
+      },
+      "port-status": 5376
+    }
+  ],
+  "usb_devices": [
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USBSpeed": 5,
+      "locationID": 1048576
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USBSpeed": 5,
+      "locationID": 2097152
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USBSpeed": 5,
+      "locationID": 17825792
+    },
+    {
+      "IOObjectClass": "IOUSBHostDevice",
+      "USBSpeed": 5,
+      "locationID": 18874368
+    }
+  ]
+}

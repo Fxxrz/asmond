@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>elapsed_ns</key><integer>1011353792</integer>
+  <key>hw_model</key><string>MacBookAir7,2</string>
+  <key>thermal_pressure</key><string>Nominal</string>
+  <key>processor</key>
+  <dict>
+    <key>package_watts</key><real>3.52196</real>
+    <key>cpu_watts</key><real>1.50688</real>
+    <key>igpu_watts</key><real>0.0360893</real>
+    <key>dram_watts</key><real>0.5449</real>
+    <key>freq_hz</key><real>1847750000</real>
+    <key>packages</key>
+    <array>
+      <dict>
+        <key>perf_limit_reasons</key>
+        <array>
+          <string>CPU LIMIT MAX_TURBO_LIMIT</string>
+          <string>RING LIMIT VR_ICCMAX</string>
+        </array>
+        <key>cores</key>
+        <array>
+          <dict>
+            <key>core</key><integer>0</integer>
+            <key>c_state_ratio</key><real>0.745087</real>
+            <key>cpus</key>
+            <array>
+              <dict><key>cpu</key><integer>0</integer><key>freq_hz</key><real>1725430000</real></dict>
+              <dict><key>cpu</key><integer>1</integer><key>freq_hz</key><real>2113510000</real></dict>
+            </array>
+          </dict>
+          <dict>
+            <key>core</key><integer>1</integer>
+            <key>c_state_ratio</key><real>0.772952</real>
+            <key>cpus</key>
+            <array>
+              <dict><key>cpu</key><integer>2</integer><key>freq_hz</key><real>1871770000</real></dict>
+              <dict><key>cpu</key><integer>3</integer><key>freq_hz</key><real>1866780000</real></dict>
+            </array>
+          </dict>
+        </array>
+      </dict>
+    </array>
+  </dict>
+  <key>GPU</key>
+  <array>
+    <dict>
+      <key>freq_hz</key><real>350000000</real>
+      <key>misc_counters</key>
+      <dict><key>GPU Busy</key><real>0.012749</real></dict>
+    </dict>
+  </array>
+  <key>smc</key>
+  <dict>
+    <key>cpu_die</key><real>80.71</real>
+    <key>fan</key><real>1196</real>
+    <key>cpu_plimit</key><real>0</real>
+    <key>cpu_prochot</key><false/>
+    <key>cpu_thermal_level</key><integer>0</integer>
+    <key>gpu_plimit</key><real>0</real>
+    <key>io_thermal_level</key><integer>0</integer>
+    <key>smc_prochot</key><false/>
+  </dict>
+</dict>
+</plist>
